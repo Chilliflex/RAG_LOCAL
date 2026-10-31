@@ -1,0 +1,15 @@
+# Install first, separately:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+#   pip install --only-binary=:all: llama-cpp-python==0.3.4 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+pymupdf
+docling
+FlagEmbedding
+qdrant-client
+transformers<5
+accelerate
+timm
+einops
+python-dotenv
+fastapi
+uvicorn
+python-multipart

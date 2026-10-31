@@ -1,0 +1,6 @@
+.venv/
+models/
+data/
+samples/raw/
+.env
+__pycache__/

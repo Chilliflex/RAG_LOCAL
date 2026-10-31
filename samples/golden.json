@@ -1,0 +1,346 @@
+[
+ {
+  "file": "digital_attention.pdf",
+  "question": "What BLEU score does the big Transformer reach on WMT 2014 English-to-German?",
+  "answer": [
+   "28.4"
+  ],
+  "pages": [
+   1,
+   8
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "What BLEU score is reported on the WMT 2014 English-to-French task?",
+  "answer": [
+   "41.8"
+  ],
+  "pages": [
+   1,
+   8
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "How many identical layers does the encoder stack have?",
+  "answer": [
+   "6",
+   "six"
+  ],
+  "pages": [
+   3
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "What is the dimension of the model outputs, d_model?",
+  "answer": [
+   "512"
+  ],
+  "pages": [
+   3,
+   5
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "How many parallel attention heads are used?",
+  "answer": [
+   "8",
+   "eight"
+  ],
+  "pages": [
+   5
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "What is the inner-layer dimensionality of the feed-forward network?",
+  "answer": [
+   "2048"
+  ],
+  "pages": [
+   5
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "Why are the dot products scaled in scaled dot-product attention?",
+  "answer": [
+   "sqrt",
+   "√",
+   "square root",
+   "softmax",
+   "small gradients"
+  ],
+  "pages": [
+   4
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "What functions are used for the positional encodings?",
+  "answer": [
+   "sine",
+   "sinusoid"
+  ],
+  "pages": [
+   6
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "What hardware were the models trained on?",
+  "answer": [
+   "P100"
+  ],
+  "pages": [
+   7
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "How long did it take to train the big model?",
+  "answer": [
+   "3.5 days"
+  ],
+  "pages": [
+   7
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "How many warmup steps does the learning rate schedule use?",
+  "answer": [
+   "4000"
+  ],
+  "pages": [
+   7
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "What value of label smoothing was used during training?",
+  "answer": [
+   "0.1"
+  ],
+  "pages": [
+   8
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "What F1 score does the Transformer get on WSJ constituency parsing in the semi-supervised setting?",
+  "answer": [
+   "92.7"
+  ],
+  "pages": [
+   10
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "Compare the per-layer complexity of self-attention and recurrent layers.",
+  "answer": [
+   "n^2",
+   "n2",
+   "n²",
+   "O(n"
+  ],
+  "pages": [
+   6
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "How many tables are in the document?",
+  "answer": [
+   "4"
+  ]
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "What was the mean nitrate level at station C?",
+  "answer": [
+   "11.3"
+  ],
+  "pages": [
+   1
+  ]
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "Which station had the highest turbidity?",
+  "answer": [
+   "C"
+  ],
+  "pages": [
+   1
+  ]
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "What was the pH at station D?",
+  "answer": [
+   "7.6"
+  ],
+  "pages": [
+   1
+  ]
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "When were the water samples collected?",
+  "answer": [
+   "March",
+   "May"
+  ],
+  "pages": [
+   1,
+   2,
+   3
+  ]
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "What did the handwritten note say about her wrists?",
+  "answer": [
+   "bruis"
+  ],
+  "pages": [
+   1
+  ]
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "What happened to turbidity after each storm?",
+  "answer": [
+   "rose",
+   "increase"
+  ],
+  "pages": [
+   1,
+   2,
+   3
+  ]
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "Which four major aspects of LLMs does the survey focus on?",
+  "answer": [
+   "pre-training",
+   "utilization",
+   "capacity evaluation"
+  ],
+  "pages": [
+   1
+  ]
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "Who proposed the KM scaling law and in what year?",
+  "answer": [
+   "Kaplan",
+   "2020"
+  ],
+  "pages": [
+   4
+  ]
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "Which team proposed the Chinchilla scaling law?",
+  "answer": [
+   "DeepMind",
+   "Hoffmann"
+  ],
+  "pages": [
+   4
+  ]
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "What are the three typical emergent abilities of LLMs?",
+  "answer": [
+   "in-context learning",
+   "instruction following",
+   "step-by-step reasoning"
+  ],
+  "pages": [
+   5
+  ]
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "How large is BookCorpus according to the corpora table?",
+  "answer": [
+   "5GB",
+   "5 GB"
+  ],
+  "pages": [
+   13
+  ]
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "What is the formula for Pre Norm in the detailed configuration table?",
+  "answer": [
+   "Sublayer(Norm(x))",
+   "Norm(x)"
+  ],
+  "pages": [
+   24
+  ]
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "How does greedy search pick the next token?",
+  "answer": [
+   "most likely",
+   "arg max",
+   "highest probability"
+  ],
+  "pages": [
+   26
+  ]
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "Summarize the main topics covered by the whole document.",
+  "answer": [
+   "pre-training",
+   "alignment",
+   "evaluation"
+  ]
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "List the sections of the document.",
+  "answer": [
+   "Introduction",
+   "Pre-training"
+  ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "What is the capital of Australia?",
+  "answer": [
+   "Not found"
+  ]
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "What was the fish population count at station B?",
+  "answer": [
+   "Not found"
+  ]
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "What was the GDP of France in 2019?",
+  "answer": [
+   "Not found"
+  ]
+ }
+]

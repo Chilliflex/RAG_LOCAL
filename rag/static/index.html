@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local PDF RAG</title>
+<style>
+  :root { --bg:#fafafa; --fg:#1a1a1a; --muted:#666; --line:#ddd; --accent:#2457c5; --ok:#1d7a3a; --bad:#b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161616; --fg:#eee; --muted:#9a9a9a; --line:#333; --accent:#7aa2ff; --ok:#5fcf85; --bad:#ff8a80; } }
+  body { font: 15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--fg); max-width:860px; margin:0 auto; padding:16px; }
+  h1 { font-size:1.3rem; } h2 { font-size:1.05rem; margin-top:1.6rem; }
+  section { border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin:12px 0; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:7px 14px; font:inherit; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  textarea { width:100%; box-sizing:border-box; font:inherit; padding:8px; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; }
+  .muted { color:var(--muted); font-size:.9em; } .ok { color:var(--ok); } .bad { color:var(--bad); }
+  #answer { white-space:pre-wrap; } li { margin:4px 0; } progress { width:100%; }
+  details summary { cursor:pointer; }
+</style>
+</head>
+<body>
+<h1>Local PDF RAG <span class="muted">— runs fully on this computer</span></h1>
+
+<section aria-labelledby="up-h">
+  <h2 id="up-h">1. Upload a PDF</h2>
+  <label for="file">PDF file</label>
+  <input id="file" type="file" accept="application/pdf">
+  <button id="upload">Upload &amp; ingest</button>
+  <div id="progress" role="status" aria-live="polite"></div>
+</section>
+
+<section aria-labelledby="docs-h">
+  <h2 id="docs-h">2. Documents</h2>
+  <p class="muted">Tick documents to search only those; none ticked = search all.</p>
+  <ul id="docs"></ul>
+</section>
+
+<section aria-labelledby="ask-h">
+  <h2 id="ask-h">3. Ask</h2>
+  <label for="q">Question</label>
+  <textarea id="q" rows="3" placeholder="e.g. What was the nitrate level at station C?"></textarea>
+  <button id="ask">Ask</button>
+  <div role="status" aria-live="polite">
+    <p id="answer"></p>
+    <ul id="sources"></ul>
+  </div>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function loadDocs() {
+  const docs = await (await fetch("/docs")).json();
+  $("docs").innerHTML = docs.map(d => `<li><label><input type="checkbox" value="${d.doc_id}">
+    ${esc(d.title)} <span class="muted">(${esc(d.file)}, ${d.pages} pages)</span>
+    ${d.complete === false ? '<span class="bad">audit found gaps</span>' : d.complete ? '<span class="ok">audit complete</span>' : ""}</label></li>`).join("")
+    || '<li class="muted">No documents yet.</li>';
+}
+
+async function poll(id) {
+  const s = await (await fetch(`/status/${id}`)).json();
+  const pct = s.total ? ` ${s.done}/${s.total}` : "";
+  let html = `Stage: <b>${esc(s.stage)}</b>${pct}`;
+  if (s.total) html += `<progress max="${s.total}" value="${s.done}"></progress>`;
+  if (s.stage === "error") html = `<span class="bad">Failed: ${esc(s.error)}</span>`;
+  if (s.audit) {
+    const a = s.audit;
+    html = `<span class="${a.complete ? "ok" : "bad"}">${a.complete ? "Done — audit complete" : "Done — audit found gaps"}</span>
+      <span class="muted">${a.pages} pages, ${a.sections} sections, ${a.counts.table} tables, ${a.counts.figure} figures,
+      ${a.counts.formula} formulas, ${a.references} references</span>
+      ${a.gaps.length ? "<ul>" + a.gaps.map(g => `<li>${esc(g)}</li>`).join("") + "</ul>" : ""}
+      ${a.low_confidence.length ? `<details><summary>${a.low_confidence.length} low-confidence regions</summary><ul>${a.low_confidence.map(l => `<li>p${l.page}: ${esc(l.text)} (${l.confidence})</li>`).join("")}</ul></details>` : ""}`;
+  }
+  $("progress").innerHTML = html;
+  if (s.stage !== "done" && s.stage !== "error") setTimeout(() => poll(id), 2000);
+  else { $("upload").disabled = false; loadDocs(); }
+}
+
+$("upload").onclick = async () => {
+  const f = $("file").files[0];
+  if (!f) { $("progress").textContent = "Choose a PDF first."; return; }
+  $("upload").disabled = true;
+  const fd = new FormData(); fd.append("file", f);
+  const r = await fetch("/upload", {method: "POST", body: fd});
+  const j = await r.json();
+  if (!r.ok) { $("progress").innerHTML = `<span class="bad">${esc(j.detail)}</span>`; $("upload").disabled = false; return; }
+  poll(j.doc_id);
+};
+
+$("ask").onclick = async () => {
+  const q = $("q").value.trim();
+  if (!q) return;
+  $("ask").disabled = true; $("answer").textContent = "Thinking… (local model, may take a minute)"; $("sources").innerHTML = "";
+  const doc_ids = [...document.querySelectorAll("#docs input:checked")].map(i => i.value);
+  try {
+    const r = await fetch("/ask", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({question: q, doc_ids})});
+    const j = await r.json();
+    if (!r.ok) { $("answer").innerHTML = `<span class="bad">${esc(j.detail)}</span>`; return; }
+    $("answer").textContent = j.answer;
+    $("sources").innerHTML = j.sources.map((s, n) => `<li><details><summary>[${n + 1}] pages ${s.pages.join(", ")} — ${esc(s.section || s.type)}</summary>
+      <p class="muted">${esc(s.text)}</p></details></li>`).join("");
+  } finally { $("ask").disabled = false; }
+};
+
+loadDocs();
+</script>
+</body>
+</html>
