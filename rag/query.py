@@ -3,7 +3,7 @@ import json
 import re
 import time
 
-from rag import config, index, store
+from rag import config, index, models, store
 from rag.models import count_tokens, generate, reranker
 
 # Plain "Passage n (page N)" headers + a worked example: the 3B model copied page lists from richer headers
@@ -27,9 +27,11 @@ def route(q: str) -> str:
 
 def ask(q: str, doc_ids: list[str] | None = None) -> dict:
     t = time.time()
+    models.last_provider = config.PROVIDER
     r = _ask(q, doc_ids)
+    r["provider"] = models.last_provider  # "local" in cloud mode means Gemini failed and the local model answered
     with open(config.DATA / "queries.jsonl", "a", encoding="utf-8") as f:  # per-question latency/quality log
-        f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "question": q, "route": r["route"],
+        f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "question": q, "route": r["route"], "provider": r["provider"],
                             "seconds": round(time.time() - t, 1), "sources": len(r["sources"]),
                             "top_score": max((s.get("score") or 0 for s in r["sources"]), default=None),
                             "not_found": r["answer"] == NOT_FOUND}, ensure_ascii=False) + "\n")
@@ -97,8 +99,9 @@ def _expand(passages, docs):
     return out
 
 
-def _context(passages, budget_tokens=2500) -> str:
-    """Prompt stays inside LLM_CTX: 2500 context + instructions + 512 answer < 8192."""
+def _context(passages, budget_tokens=None) -> str:
+    """Local: 2500 context + instructions + 512 answer stays inside LLM_CTX 8192. Cloud: 12000."""
+    budget_tokens = budget_tokens or config.CONTEXT_TOKENS
     parts, used = [], 0
     for n, p in enumerate(passages, 1):
         block = f"Passage {n} (page {', '.join(map(str, p['pages']))}):\n{p['text']}"

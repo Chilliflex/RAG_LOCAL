@@ -10,6 +10,8 @@ accelerate
 timm
 einops
 python-dotenv
+httpx
+psutil
 fastapi
 uvicorn
 python-multipart

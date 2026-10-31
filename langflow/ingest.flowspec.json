@@ -1,0 +1,25 @@
+{
+  "name": "PDF RAG (API) - Ingest",
+  "description": "Upload a PDF: Mistral OCR reads it, Mistral embeds the chunks, Qdrant Cloud stores them with page numbers.",
+  "nodes": [
+    {"name": "mistral_ocr", "component": "MistralOCR", "params": {"api_key": "$var:MISTRAL_API_KEY"}},
+    {"name": "split_text", "component": "SplitText", "params": {"chunk_size": 1500, "chunk_overlap": 200, "separator": "\\n\\n"}},
+    {"name": "embeddings", "component": "ext:mistral:MistralAIEmbeddingsComponent@official", "params": {"mistral_api_key": "$var:MISTRAL_API_KEY", "model": "mistral-embed"}},
+    {"name": "qdrant", "component": "ext:qdrant:QdrantVectorStoreComponent@official", "params": {"collection_name": "pdf_rag", "url": "https://YOUR-CLUSTER.cloud.qdrant.io:6333", "host": "", "api_key": "$var:QDRANT_API_KEY", "search_query": "What is this document about?"}},
+    {"name": "chat_output", "component": "ChatOutput", "params": {"should_store_message": false}}
+  ],
+  "edges": [
+    {"source": "mistral_ocr", "source_output": "pages", "target": "split_text", "target_field": "data_inputs"},
+    {"source": "split_text", "source_output": "dataframe", "target": "qdrant", "target_field": "ingest_data"},
+    {"source": "embeddings", "source_output": "embeddings", "target": "qdrant", "target_field": "embedding"},
+    {"source": "qdrant", "source_output": "search_results", "target": "chat_output", "target_field": "input_value"}
+  ],
+  "rationale": "Separate from the chat flow so a question never re-runs OCR. The fixed search query proves the chunks were stored.",
+  "assumptions": [
+    "Register langflow/mistral_ocr.py with `flowgen component import` first.",
+    "Replace the url with your Qdrant Cloud cluster URL, the same one in both flows.",
+    "Create Langflow global variables MISTRAL_API_KEY and QDRANT_API_KEY.",
+    "Left out on purpose: page stitching, section tree, section summaries, cross-references and the completeness audit; no stock node does these.",
+    "Left out on purpose: linking margin notes to the printed text they annotate; this flow does not request word positions."
+  ]
+}

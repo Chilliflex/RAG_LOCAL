@@ -342,5 +342,236 @@
   "answer": [
    "Not found"
   ]
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "Which function is applied to QK^T in the scaled dot-product attention formula?",
+  "answer": [
+   "softmax"
+  ],
+  "pages": [
+   4
+  ],
+  "category": "formula"
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "What activation does equation 2 use in the position-wise feed-forward network?",
+  "answer": [
+   "max(0",
+   "ReLU"
+  ],
+  "pages": [
+   5
+  ],
+  "category": "formula"
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "In the learning-rate formula (equation 3), what exponent is applied to warmup_steps?",
+  "answer": [
+   "-1.5",
+   "−1.5"
+  ],
+  "pages": [
+   7
+  ],
+  "category": "formula"
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "What is the value of the exponent alpha_N in the KM scaling law formula?",
+  "answer": [
+   "0.076"
+  ],
+  "pages": [
+   4
+  ],
+  "category": "formula"
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "What does Figure 1 of the paper show?",
+  "answer": [
+   "architecture"
+  ],
+  "pages": [
+   3
+  ],
+  "category": "chart"
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "What do the trend lines in Fig. 1 of the survey count?",
+  "answer": [
+   "arXiv"
+  ],
+  "pages": [
+   2
+  ],
+  "category": "chart"
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "What does Fig. 6 show about the pre-training data of existing LLMs?",
+  "answer": [
+   "ratio",
+   "data source"
+  ],
+  "pages": [
+   17
+  ],
+  "category": "chart"
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "Which algorithm's workflow is illustrated in Fig. 12?",
+  "answer": [
+   "RLHF"
+  ],
+  "pages": [
+   38
+  ],
+  "category": "chart"
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "According to the handwritten text, what would three times the rate produce?",
+  "answer": [
+   "66,000",
+   "66000"
+  ],
+  "pages": [
+   3
+  ],
+  "category": "handwriting"
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "In the handwritten text, where was the merchant from who had been murdered?",
+  "answer": [
+   "Genoa"
+  ],
+  "pages": [
+   3
+  ],
+  "category": "handwriting"
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "Which name appears in the handwritten line about victimising someone?",
+  "answer": [
+   "Hewson"
+  ],
+  "pages": [
+   2
+  ],
+  "category": "handwriting"
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "Where was the person seated, according to the handwritten note on page 1?",
+  "answer": [
+   "small table",
+   "shadowy"
+  ],
+  "pages": [
+   1
+  ],
+  "category": "handwriting"
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "What does the margin note on page 1 say they had, compared with their successors?",
+  "answer": [
+   "simplicity"
+  ],
+  "pages": [
+   1
+  ],
+  "category": "margin_note"
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "Which feast is named in a margin note?",
+  "answer": [
+   "Matzos"
+  ],
+  "pages": [
+   2
+  ],
+  "category": "margin_note"
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "In a margin note, where did the speaker say they travelled down from?",
+  "answer": [
+   "London"
+  ],
+  "pages": [
+   3
+  ],
+  "category": "margin_note"
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "According to a margin note, what appears paler in animals?",
+  "answer": [
+   "blood",
+   "paler"
+  ],
+  "pages": [
+   3
+  ],
+  "category": "margin_note"
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "What is the relationship between d_model, the number of heads and d_k in the base model?",
+  "answer": [
+   "64"
+  ],
+  "pages": [
+   5
+  ],
+  "category": "multi_hop"
+ },
+ {
+  "file": "digital_attention.pdf",
+  "question": "Compare the training time of the base model and the big model.",
+  "answer": [
+   "3.5 days",
+   "12 hours"
+  ],
+  "pages": [
+   7
+  ],
+  "category": "multi_hop"
+ },
+ {
+  "file": "long_llm_survey.pdf",
+  "question": "Compare how greedy search and sampling-based methods choose the next token.",
+  "answer": [
+   "most likely",
+   "random",
+   "probability"
+  ],
+  "pages": [
+   26,
+   27
+  ],
+  "category": "multi_hop"
+ },
+ {
+  "file": "mixed_handwriting.pdf",
+  "question": "Compare the nitrate levels at stations A and C.",
+  "answer": [
+   "11.3",
+   "4.1"
+  ],
+  "pages": [
+   1
+  ],
+  "category": "multi_hop"
  }
 ]

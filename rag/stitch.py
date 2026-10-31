@@ -149,4 +149,17 @@ if __name__ == "__main__":  # self-check
     assert next(i for i in d["items"] if i["id"] == "b")["text"] == "This sentence continues onto the next page." and "c" not in ids
     t = next(i for i in d["items"] if i["id"] == "t1")
     assert t["text"].endswith("| 3 | 4 |") and "t2" not in ids, t["text"]
+    # markdown input (API mode): full-width reading-order boxes, heading levels from '#', no margin notes
+    def slot(id, page, n, t, text, **kw):
+        return {"id": id, "page": page, "type": t, "text": text, "bbox": [61.2, n * 100, 550.8, n * 100 + 90], "source": "mistral", **kw}
+    md = [slot("h1", 1, 0, "heading", "Methods", level=1), slot("a", 1, 1, "text", "This sentence continues"),
+          slot("c", 2, 0, "text", "onto page two."), slot("t1", 2, 1, "table", "| a | b |\n|---|---|\n| 1 | 2 |"),
+          slot("cap", 2, 2, "text", "Table 1: Sizes"), slot("h2", 2, 3, "heading", "Setup", level=2),
+          slot("t2", 3, 0, "table", "| a | b |\n|---|---|\n| 3 | 4 |"), slot("s", 3, 1, "text", "short")]
+    d = build("x", "T", 3, md, {1: 612, 2: 612, 3: 612}, [])
+    ids = [i["id"] for i in d["items"]]
+    assert [(s["title"], s["level"]) for s in d["sections"]] == [("Methods", 1), ("Setup", 2)] and d["sections"][1]["path"] == ["Methods", "Setup"]
+    assert next(i for i in d["items"] if i["id"] == "a")["text"] == "This sentence continues onto page two." and "c" not in ids
+    assert next(i for i in d["items"] if i["id"] == "t1")["caption"] == "Table 1: Sizes" and "cap" not in ids
+    assert "t2" in ids and not any(i["type"] == "margin_note" for i in d["items"])  # t2 follows a heading change, so it stays its own table
     print("ok")

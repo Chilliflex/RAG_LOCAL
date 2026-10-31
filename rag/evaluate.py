@@ -53,7 +53,7 @@ def run(golden_path, retrieval_only=False) -> dict:
     rows = []
     for g in golden:
         did = ids[g["file"]]
-        row = {"question": g["question"], "route": route(g["question"])}
+        row = {"question": g["question"], "route": route(g["question"]), "category": g.get("category", "baseline")}
         if g.get("pages") or g["answer"] == ["Not found"]:
             top = retrieve(g["question"], [did], k=5)
             if g.get("pages"):
@@ -70,11 +70,16 @@ def run(golden_path, retrieval_only=False) -> dict:
         rows.append(row)
     rec = [r["recall@5"] for r in rows if "recall@5" in r]
     acc = [r["correct"] for r in rows if "correct" in r]
-    out = {"questions": len(rows), "recall@5": round(sum(rec) / len(rec), 3) if rec else None,
-           "accuracy": round(sum(acc) / len(acc), 3) if acc else None}
+    out = {"provider": config.PROVIDER, "questions": len(rows), "recall@5": round(sum(rec) / len(rec), 3) if rec else None,
+           "accuracy": round(sum(acc) / len(acc), 3) if acc else None,
+           "by_category": {c: {"questions": sum(r["category"] == c for r in rows),
+                               "correct": sum(r.get("correct", False) for r in rows if r["category"] == c),
+                               "seconds": round(sum(r.get("seconds", 0) for r in rows if r["category"] == c), 1)}
+                           for c in sorted({r["category"] for r in rows})}}
     truth = config.ROOT / "samples/mixed_handwriting.truth.json"
     mixed = config.ROOT / "samples/mixed_handwriting.pdf"
-    if truth.exists() and mixed.exists() and store.path(doc_id_for(mixed)).exists():
+    # CER matches truth lines to items by box; cloud items have reading-order boxes, not positions, so the match is meaningless there
+    if config.PROVIDER == "local" and truth.exists() and mixed.exists() and store.path(doc_id_for(mixed)).exists():
         hw = handwriting_cer(truth, doc_id_for(mixed))
         out["handwriting_cer"] = {k: hw[k] for k in ("cer", "cer_body", "cer_margin")}
         rows.append({"handwriting_lines": hw["lines"]})

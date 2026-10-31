@@ -33,10 +33,16 @@ def run(doc: dict, triage: list[dict], toc: list) -> dict:
             gaps.append(f"{kind}s mentioned in the text but not extracted with a caption: {missing}")
     low = [{"page": i["page"], "type": i["type"], "confidence": round(i["confidence"], 2), "text": i["text"][:80]}
            for i in doc["items"] if i.get("confidence") is not None and i["confidence"] < config.OCR_CONFIDENCE_MIN]
+    notes = []
+    if cloud := [i for i in doc["items"] if i.get("source") == "mistral"]:
+        notes.append(f"{len(cloud)} items read by Mistral OCR: margin notes are not detected and OCR confidence is not reported in API mode")
+        blank = [i["page"] for i in cloud if i["type"] == "figure" and not i.get("description")]
+        if blank:
+            gaps.append(f"{len(blank)} figures have no description: pages {blank[:20]}")
     report = {"doc_id": doc["doc_id"], "pages": doc["pages"], "pages_with_items": len(parsed_pages),
               "scanned_pages": sum(t["scanned"] for t in triage), "sections": len(doc["sections"]), "toc_entries": len(toc),
               "references": len(doc["references"]), "urls": len(doc["urls"]), "xrefs": len(doc["xrefs"]),
-              "counts": counts, "low_confidence": low, "gaps": gaps, "complete": not gaps}
+              "counts": counts, "low_confidence": low, "notes": notes, "gaps": gaps, "complete": not gaps}
     write_json(config.DATA / doc["doc_id"] / "audit.json", report)
     return report
 

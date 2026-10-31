@@ -1,6 +1,7 @@
 .venv/
 models/
 data/
+data-cloud/
 samples/raw/
 .env
 __pycache__/

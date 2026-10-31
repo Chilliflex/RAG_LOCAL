@@ -3,59 +3,235 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Local PDF RAG</title>
+<meta name="color-scheme" content="light dark">
+<title>PDF RAG</title>
 <style>
-  :root { --bg:#fafafa; --fg:#1a1a1a; --muted:#666; --line:#ddd; --accent:#2457c5; --ok:#1d7a3a; --bad:#b3261e; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#161616; --fg:#eee; --muted:#9a9a9a; --line:#333; --accent:#7aa2ff; --ok:#5fcf85; --bad:#ff8a80; } }
-  body { font: 15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--fg); max-width:860px; margin:0 auto; padding:16px; }
-  h1 { font-size:1.3rem; } h2 { font-size:1.05rem; margin-top:1.6rem; }
-  section { border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin:12px 0; }
-  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:7px 14px; font:inherit; cursor:pointer; }
-  button:disabled { opacity:.5; cursor:default; }
-  textarea { width:100%; box-sizing:border-box; font:inherit; padding:8px; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; }
-  .muted { color:var(--muted); font-size:.9em; } .ok { color:var(--ok); } .bad { color:var(--bad); }
-  #answer { white-space:pre-wrap; } li { margin:4px 0; } progress { width:100%; }
-  details summary { cursor:pointer; }
+  /* ---- design tokens: light is the base, dark overrides; data-theme forces one, otherwise the OS decides ---- */
+  :root {
+    --bg: #f4f6f9; --surface: #ffffff; --surface-2: #eef1f5; --fg: #17202a; --fg-2: #4b5563; --muted: #6b7280;
+    --line: #d9dee6; --line-strong: #b9c2cf; --accent: #1f5fd1; --accent-hover: #184cab; --accent-soft: #e4ecfb; --on-accent: #fff;
+    --ok: #15803d; --ok-soft: #e3f5e9; --bad: #b42318; --bad-soft: #fde8e6; --warn: #9a5b00; --warn-soft: #fdf1dc;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 4px 16px rgba(16, 24, 40, .06);
+    --radius: 12px; --radius-sm: 8px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #0f1318; --surface: #171c23; --surface-2: #1f262f; --fg: #e8ecf1; --fg-2: #b6bec9; --muted: #8b95a3;
+    --line: #2a323d; --line-strong: #3b4553; --accent: #6ea0ff; --accent-hover: #8db4ff; --accent-soft: #1a2a46; --on-accent: #0b1220;
+    --ok: #4ade80; --ok-soft: #10301d; --bad: #f87171; --bad-soft: #3a1512; --warn: #fbbf24; --warn-soft: #3a2a07;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35); color-scheme: dark; } }
+  :root[data-theme="dark"] { --bg: #0f1318; --surface: #171c23; --surface-2: #1f262f; --fg: #e8ecf1; --fg-2: #b6bec9; --muted: #8b95a3;
+    --line: #2a323d; --line-strong: #3b4553; --accent: #6ea0ff; --accent-hover: #8db4ff; --accent-soft: #1a2a46; --on-accent: #0b1220;
+    --ok: #4ade80; --ok-soft: #10301d; --bad: #f87171; --bad-soft: #3a1512; --warn: #fbbf24; --warn-soft: #3a2a07;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35); color-scheme: dark; }
+
+  /* ---- base ---- */
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body { margin: 0; font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg);
+         -webkit-font-smoothing: antialiased; transition: background-color .2s, color .2s; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 16px 48px; }
+  h1 { font-size: 1.15rem; font-weight: 650; letter-spacing: -.01em; margin: 0; }
+  h2 { font-size: 1rem; font-weight: 650; margin: 0 0 10px; display: flex; align-items: center; gap: 10px; }
+  h2 .step { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: .8rem; font-weight: 700; }
+  h3 { font-size: 1rem; font-weight: 650; margin: 0 0 8px; }
+  p { margin: 8px 0; } code { font-size: .9em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+  a { color: var(--accent); } a:hover { color: var(--accent-hover); }
+  .muted { color: var(--muted); font-size: .9em; } .ok { color: var(--ok); } .bad { color: var(--bad); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+  /* ---- header ---- */
+  header { position: sticky; top: 0; z-index: 2; background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(8px);
+           border-bottom: 1px solid var(--line); margin: 0 -16px 20px; padding: 12px 16px; }
+  .bar { max-width: 900px; margin: 0 auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 10px; margin-right: auto; }
+  .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; font-weight: 800; font-size: .85rem; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); font-size: .85rem; color: var(--fg-2); }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+  .seg { display: inline-flex; background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 2px; }
+  .seg button { background: none; color: var(--fg-2); padding: 4px 11px; border-radius: 999px; font-size: .85rem; }
+  .seg button[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: var(--shadow); }
+  .seg button:hover { color: var(--fg); }
+
+  /* ---- panels, cards, controls ---- */
+  section, .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+  section { padding: 18px 20px; margin: 14px 0; }
+  button { background: var(--accent); color: var(--on-accent); border: 0; border-radius: var(--radius-sm); padding: 8px 16px; font: inherit; font-weight: 600; cursor: pointer; transition: background-color .15s, transform .05s; }
+  button:hover { background: var(--accent-hover); } button:active { transform: translateY(1px); }
+  button:disabled { opacity: .5; cursor: default; transform: none; }
+  button.link, button.ghost { background: transparent; color: var(--accent); font-weight: 600; padding: 6px 10px; border: 1px solid transparent; }
+  button.ghost { border-color: var(--line-strong); color: var(--fg); } button.ghost:hover, button.link:hover { background: var(--accent-soft); }
+  textarea, input[type=password], input[type=file] { width: 100%; font: inherit; padding: 9px 11px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: inherit; }
+  textarea:focus, input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+  label { font-weight: 600; font-size: .9rem; display: block; margin: 10px 0 6px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; } @media (max-width: 640px) { .cards { grid-template-columns: 1fr; } }
+  .card { text-align: left; color: var(--fg); padding: 16px; border-width: 2px; cursor: pointer; transition: border-color .15s, transform .15s; font-weight: 400; }
+  .card:hover { border-color: var(--line-strong); transform: translateY(-1px); background: var(--surface); }
+  .card[aria-pressed="true"] { border-color: var(--accent); background: var(--surface); }
+  .card h3 { display: flex; justify-content: space-between; align-items: center; }
+  .tag { font-size: .75rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: .9em; } td, th { padding: 6px 6px; vertical-align: top; border-top: 1px solid var(--line); text-align: left; }
+  th { color: var(--muted); font-weight: 600; border-top: 0; } .card td:first-child { color: var(--muted); width: 32%; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: .8rem; font-weight: 600; }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); } .badge.bad { background: var(--bad-soft); color: var(--bad); } .badge.warn { background: var(--warn-soft); color: var(--warn); }
+  .notice { border-left: 3px solid var(--warn); background: var(--warn-soft); color: var(--fg); padding: 8px 12px; border-radius: 6px; margin: 10px 0; font-size: .9em; }
+  .notice.bad { border-color: var(--bad); background: var(--bad-soft); }
+  #req { margin-top: 16px; } #req ul { list-style: none; padding: 0; margin: 8px 0; } #req li { display: flex; gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); }
+  #req li .mark { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: .75rem; font-weight: 800; }
+  .mark.ok { background: var(--ok-soft); color: var(--ok); } .mark.bad { background: var(--bad-soft); color: var(--bad); }
+  #docs { list-style: none; padding: 0; margin: 0; } #docs li { padding: 8px 0; border-top: 1px solid var(--line); } #docs li:first-child { border-top: 0; }
+  #docs label { display: flex; gap: 10px; align-items: baseline; font-weight: 500; margin: 0; cursor: pointer; } #docs input { margin-top: 4px; }
+  progress { width: 100%; height: 8px; accent-color: var(--accent); margin-top: 6px; }
+  #progress { margin-top: 12px; } #progress ul { margin: 6px 0; padding-left: 18px; }
+  #answer { white-space: pre-wrap; background: var(--surface-2); border-radius: var(--radius-sm); padding: 12px 14px; margin: 12px 0 0; min-height: 1.5em; }
+  #answer:empty { display: none; }
+  #sources { list-style: none; padding: 0; margin: 10px 0 0; } #sources li { border-top: 1px solid var(--line); padding: 6px 0; }
+  details summary { cursor: pointer; font-weight: 500; } details p { margin: 6px 0 0 14px; }
+  .hint { color: var(--muted); font-size: .85rem; margin-top: 6px; }
+  .sr { position: absolute; left: -9999px; }
 </style>
 </head>
 <body>
-<h1>Local PDF RAG <span class="muted">— runs fully on this computer</span></h1>
+<header>
+  <div class="bar">
+    <div class="brand"><div class="logo" aria-hidden="true">R</div><h1>PDF RAG</h1>
+      <span id="modeTag" class="pill" hidden><span class="dot" aria-hidden="true"></span><span id="modeName"></span></span>
+      <button id="modeBtn" class="link" hidden>Change mode</button>
+    </div>
+    <div class="seg" role="group" aria-label="Theme">
+      <button data-theme="system" aria-pressed="true">System</button>
+      <button data-theme="light" aria-pressed="false">Light</button>
+      <button data-theme="dark" aria-pressed="false">Dark</button>
+    </div>
+  </div>
+</header>
 
+<div class="wrap">
+<section id="modes" hidden aria-labelledby="modes-h">
+  <h2 id="modes-h">How should documents be processed?</h2>
+  <p class="muted">Pick a mode to see what it needs. You can change it at any time; each mode keeps its own documents.</p>
+  <div class="cards">
+    <button class="card" data-p="local" aria-pressed="false">
+      <h3>Local, free <span class="tag">offline</span></h3>
+      <table>
+        <tr><td>Cost</td><td>$0 after a one-time 12 GB model download</td></tr>
+        <tr><td>Speed, 100 pages</td><td>about 30 min to ingest, 10–140 s per answer (GTX 1650)</td></tr>
+        <tr><td>Privacy</td><td>nothing leaves this computer</td></tr>
+        <tr><td>Hardware</td><td>NVIDIA GPU with 4 GB VRAM recommended, 16 GB RAM, 20 GB free disk</td></tr>
+      </table>
+    </button>
+    <button class="card" data-p="cloud" aria-pressed="false">
+      <h3>API, fast <span class="tag">cloud</span></h3>
+      <table>
+        <tr><td>Cost</td><td>about $0.50 per 100-page PDF, about $0.002 per question</td></tr>
+        <tr><td>Speed, 100 pages</td><td>about 3 min to ingest, 2–5 s per answer</td></tr>
+        <tr><td>Privacy</td><td>page images go to Mistral; passages, questions and figures go to Google</td></tr>
+        <tr><td>Hardware</td><td>any laptop with 8 GB RAM, 5 GB free disk and internet</td></tr>
+      </table>
+    </button>
+  </div>
+  <div id="req" aria-live="polite"></div>
+</section>
+
+<div id="main" hidden>
 <section aria-labelledby="up-h">
-  <h2 id="up-h">1. Upload a PDF</h2>
+  <h2 id="up-h"><span class="step">1</span>Upload a PDF</h2>
   <label for="file">PDF file</label>
   <input id="file" type="file" accept="application/pdf">
-  <button id="upload">Upload &amp; ingest</button>
+  <div class="row"><button id="upload">Upload &amp; ingest</button><span class="hint">Scanned, handwritten and long PDFs are fine. Ingest is resumable.</span></div>
   <div id="progress" role="status" aria-live="polite"></div>
 </section>
 
 <section aria-labelledby="docs-h">
-  <h2 id="docs-h">2. Documents</h2>
+  <h2 id="docs-h"><span class="step">2</span>Documents</h2>
   <p class="muted">Tick documents to search only those; none ticked = search all.</p>
   <ul id="docs"></ul>
 </section>
 
 <section aria-labelledby="ask-h">
-  <h2 id="ask-h">3. Ask</h2>
+  <h2 id="ask-h"><span class="step">3</span>Ask</h2>
   <label for="q">Question</label>
   <textarea id="q" rows="3" placeholder="e.g. What was the nitrate level at station C?"></textarea>
-  <button id="ask">Ask</button>
+  <div class="row"><button id="ask">Ask</button><span class="hint">Answers cite pages as (p. N). Ctrl+Enter sends.</span></div>
   <div role="status" aria-live="polite">
     <p id="answer"></p>
     <ul id="sources"></ul>
   </div>
 </section>
+</div>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const NAMES = {local: "Local, free", cloud: "API, fast"};
+let mode = {provider: "local", keys: {}};
+const LOCAL_METHODS = "PyMuPDF triage → Docling layout, tables, OCR, pictures → TrOCR handwriting → stitch (headers, cross-page merge, captions, margin notes, section tree) → regex references and cross-refs → Qwen summaries → structure-first chunks → BGE-M3 dense + sparse → Qdrant → audit → router → RRF → bge-reranker → Qwen answer with (p. N).";
+const API_METHODS = "PyMuPDF triage → Mistral OCR (one call per PDF) → markdown to items → stitch (no margin notes) → regex → Gemini figure descriptions and summaries → chunks → BGE-M3 → Qdrant → audit → router → RRF → bge-reranker → Gemini answer with (p. N). If an API call fails, that step runs locally when the local models are installed.";
 
+/* ---- theme: system | light | dark, remembered per browser; "system" follows the OS live ---- */
+function applyTheme(t) {
+  if (t === "system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.dataset.theme = t;
+  document.querySelectorAll(".seg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.theme === t));
+  try { localStorage.setItem("theme", t); } catch (e) {}
+}
+let saved = "system"; try { saved = localStorage.getItem("theme") || "system"; } catch (e) {}
+applyTheme(saved);
+document.querySelectorAll(".seg button").forEach(b => b.onclick = () => applyTheme(b.dataset.theme));
+
+/* ---- mode ---- */
+async function loadMode() {
+  mode = await (await fetch("/mode")).json();
+  $("modeName").textContent = NAMES[mode.provider];
+  $("modeTag").hidden = false; $("modeBtn").hidden = false;
+  $("modes").hidden = mode.chosen; $("main").hidden = !mode.chosen;
+  if (mode.chosen) loadDocs();
+}
+$("modeBtn").onclick = () => { $("modes").hidden = false; $("main").hidden = true; $("req").innerHTML = ""; $("modes").scrollIntoView({behavior: "smooth"}); };
+
+const check = c => `<li><span class="mark ${c.ok ? "ok" : "bad"}" aria-label="${c.ok ? "met" : "missing"}">${c.ok ? "✓" : "✕"}</span><span>${esc(c.name)}${c.detail ? ` <span class="muted">— ${esc(c.detail)}</span>` : ""}</span></li>`;
+
+async function showReq(p) {
+  document.querySelectorAll(".card").forEach(c => c.setAttribute("aria-pressed", c.dataset.p === p));
+  $("req").innerHTML = '<p class="muted">Checking requirements…</p>';
+  const d = await (await fetch("/doctor")).json();
+  const group = p === "local" ? d.local : d.api;
+  const nOk = group.filter(c => c.ok).length;
+  let html = `<h3>Requirements for ${NAMES[p]} <span class="badge ${nOk === group.length ? "ok" : "warn"}">${nOk}/${group.length} met</span></h3><ul>${group.map(check).join("")}</ul>`;
+  if (p === "local") {
+    html += `<p class="muted">Models (${d.local_models.reduce((s, m) => s + m.gb, 0).toFixed(1)} GB, one download with <code>python scripts/download_models.py</code>): ${d.local_models.map(m => `${esc(m.name)} ${m.gb} GB`).join("; ")}.</p>
+      <p class="muted">Methods: ${LOCAL_METHODS}</p>`;
+  } else {
+    html += `<table><tr><th>API</th><th>Used for</th><th>Model</th><th>Price (list, verify on the site)</th></tr>
+      ${d.apis.map(a => `<tr><td><a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.name)}</a></td><td>${esc(a.use)}</td><td>${esc(a.model)}</td><td>${esc(a.price)}</td></tr>`).join("")}</table>
+      <p class="muted">Still on this computer: ${d.api_models.map(m => `${esc(m.name)} ${m.gb} GB`).join(" and ")} (<code>python scripts/download_models.py --api-only</code>), so chunk text and the index never leave it.</p>
+      <p class="muted">Methods: ${API_METHODS}</p>
+      <label for="mk">Mistral API key ${mode.keys.mistral ? '<span class="ok">(one is saved; leave empty to keep it)</span>' : ""}</label><input id="mk" type="password" autocomplete="off">
+      <label for="gk">Google AI Studio key ${mode.keys.google ? '<span class="ok">(one is saved; leave empty to keep it)</span>' : ""}</label><input id="gk" type="password" autocomplete="off">
+      <p class="muted">Keys are stored in data/settings.json on this computer and never shown again.</p>`;
+  }
+  html += `<div class="row"><button id="useMode">Use ${NAMES[p]}</button> <span id="modeMsg" class="muted"></span></div>`;
+  if (mode.env_override) html += `<p class="notice">PROVIDER is set in .env, so that mode returns at the next start.</p>`;
+  $("req").innerHTML = html;
+  $("useMode").onclick = async () => {
+    $("useMode").disabled = true;
+    const body = {provider: p, mistral_api_key: $("mk")?.value ?? "", google_api_key: $("gk")?.value ?? ""};
+    const r = await fetch("/mode", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if (!r.ok) { $("modeMsg").innerHTML = `<span class="bad">${esc(j.detail)}</span>`; $("useMode").disabled = false; return; }
+    loadMode();
+  };
+}
+document.querySelectorAll(".card").forEach(c => c.onclick = () => showReq(c.dataset.p));
+
+/* ---- documents, ingest, ask ---- */
 async function loadDocs() {
   const docs = await (await fetch("/docs")).json();
   $("docs").innerHTML = docs.map(d => `<li><label><input type="checkbox" value="${d.doc_id}">
-    ${esc(d.title)} <span class="muted">(${esc(d.file)}, ${d.pages} pages)</span>
-    ${d.complete === false ? '<span class="bad">audit found gaps</span>' : d.complete ? '<span class="ok">audit complete</span>' : ""}</label></li>`).join("")
-    || '<li class="muted">No documents yet.</li>';
+    <span>${esc(d.title)} <span class="muted">(${esc(d.file)}, ${d.pages} pages)</span>
+    ${d.complete === false ? '<span class="badge bad">audit found gaps</span>' : d.complete ? '<span class="badge ok">audit complete</span>' : ""}</span></label></li>`).join("")
+    || '<li class="muted">No documents yet in this mode.</li>';
 }
 
 async function poll(id) {
@@ -63,15 +239,17 @@ async function poll(id) {
   const pct = s.total ? ` ${s.done}/${s.total}` : "";
   let html = `Stage: <b>${esc(s.stage)}</b>${pct}`;
   if (s.total) html += `<progress max="${s.total}" value="${s.done}"></progress>`;
-  if (s.stage === "error") html = `<span class="bad">Failed: ${esc(s.error)}</span>`;
+  if (s.stage === "error") html = `<div class="notice bad">Failed: ${esc(s.error)}</div>`;
   if (s.audit) {
     const a = s.audit;
-    html = `<span class="${a.complete ? "ok" : "bad"}">${a.complete ? "Done — audit complete" : "Done — audit found gaps"}</span>
+    html = `<span class="badge ${a.complete ? "ok" : "bad"}">${a.complete ? "Done — audit complete" : "Done — audit found gaps"}</span>
       <span class="muted">${a.pages} pages, ${a.sections} sections, ${a.counts.table} tables, ${a.counts.figure} figures,
       ${a.counts.formula} formulas, ${a.references} references</span>
       ${a.gaps.length ? "<ul>" + a.gaps.map(g => `<li>${esc(g)}</li>`).join("") + "</ul>" : ""}
+      ${(a.notes || []).map(n => `<p class="muted">${esc(n)}</p>`).join("")}
       ${a.low_confidence.length ? `<details><summary>${a.low_confidence.length} low-confidence regions</summary><ul>${a.low_confidence.map(l => `<li>p${l.page}: ${esc(l.text)} (${l.confidence})</li>`).join("")}</ul></details>` : ""}`;
   }
+  if (s.fallback) html += `<div class="notice">${esc(s.fallback)}</div>`;
   $("progress").innerHTML = html;
   if (s.stage !== "done" && s.stage !== "error") setTimeout(() => poll(id), 2000);
   else { $("upload").disabled = false; loadDocs(); }
@@ -84,26 +262,28 @@ $("upload").onclick = async () => {
   const fd = new FormData(); fd.append("file", f);
   const r = await fetch("/upload", {method: "POST", body: fd});
   const j = await r.json();
-  if (!r.ok) { $("progress").innerHTML = `<span class="bad">${esc(j.detail)}</span>`; $("upload").disabled = false; return; }
+  if (!r.ok) { $("progress").innerHTML = `<div class="notice bad">${esc(j.detail)}</div>`; $("upload").disabled = false; return; }
   poll(j.doc_id);
 };
 
 $("ask").onclick = async () => {
   const q = $("q").value.trim();
   if (!q) return;
-  $("ask").disabled = true; $("answer").textContent = "Thinking… (local model, may take a minute)"; $("sources").innerHTML = "";
-  const doc_ids = [...document.querySelectorAll("#docs input:checked")].map(i => i.value);
+  $("ask").disabled = true; $("sources").innerHTML = "";
+  $("answer").textContent = mode.provider === "cloud" ? "Thinking…" : "Thinking… (local model, may take a minute)";
+  const ids =[...document.querySelectorAll("#docs input:checked")].map(i => i.value);
   try {
-    const r = await fetch("/ask", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({question: q, doc_ids})});
+    const r = await fetch("/ask", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({question: q, doc_ids: ids})});
     const j = await r.json();
     if (!r.ok) { $("answer").innerHTML = `<span class="bad">${esc(j.detail)}</span>`; return; }
-    $("answer").textContent = j.answer;
+    $("answer").textContent = j.answer + (j.provider !== mode.provider ? "\n\n(The API was unavailable; this answer came from the local model.)" : "");
     $("sources").innerHTML = j.sources.map((s, n) => `<li><details><summary>[${n + 1}] pages ${s.pages.join(", ")} — ${esc(s.section || s.type)}</summary>
       <p class="muted">${esc(s.text)}</p></details></li>`).join("");
   } finally { $("ask").disabled = false; }
 };
+$("q").addEventListener("keydown", e => { if (e.key === "Enter" && e.ctrlKey) $("ask").click(); });
 
-loadDocs();
+loadMode();
 </script>
 </body>
 </html>

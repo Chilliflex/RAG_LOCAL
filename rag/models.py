@@ -40,13 +40,29 @@ def llm():
     return m
 
 
+last_provider = config.PROVIDER  # set to "local" when a cloud call failed and the local model answered instead (query.ask resets it)
+
+
 def generate(system: str, user: str, max_new_tokens: int = 512) -> str:
+    global last_provider
+    if config.PROVIDER == "cloud":
+        from rag import cloud
+        try:
+            return cloud.generate(system, user, max_new_tokens)
+        except (ConnectionError, ValueError) as e:
+            if not os.path.exists(config.LLM_MODEL):
+                raise ValueError(f"{e}. The local model is not installed either (python scripts/download_models.py).") from None
+            print(f"  Gemini unavailable ({e}); answering with the local model", flush=True)
+            last_provider = "local"
     msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     out = llm().create_chat_completion(msgs, max_tokens=max_new_tokens, temperature=0.0)
     return out["choices"][0]["message"]["content"].strip()
 
 
 def count_tokens(text: str) -> int:
+    if config.PROVIDER == "cloud":
+        from rag import cloud
+        return cloud.count_tokens(text)
     return len(llm().tokenize(text.encode("utf-8"), add_bos=False))
 
 
@@ -72,3 +88,20 @@ def read_handwriting(images) -> list[tuple[str, float]]:
             keep = seq != proc.tokenizer.pad_token_id
             out.append((t, float(p[keep].mean()) if keep.any() else 0.0))
     return out
+
+
+if __name__ == "__main__":  # self-check: Gemini down -> local answer, marked; Gemini down and no local model -> readable error
+    from unittest import mock
+
+    config.PROVIDER = "cloud"
+    fake_llm = mock.Mock(create_chat_completion=lambda *a, **k: {"choices": [{"message": {"content": " local answer "}}]})
+    # run as __main__, so patch this module's own globals, not rag.models (a separate copy)
+    with mock.patch("rag.cloud.generate", side_effect=ConnectionError("gemini_generate failed after 3 attempts: ConnectError")), \
+            mock.patch.dict(globals(), {"llm": lambda: fake_llm}), mock.patch("os.path.exists", return_value=True):
+        assert generate("s", "u") == "local answer" and last_provider == "local"
+    with mock.patch("rag.cloud.generate", side_effect=ValueError("gemini_generate: HTTP 401")), mock.patch("os.path.exists", return_value=False):
+        try:
+            generate("s", "u"); raise AssertionError
+        except ValueError as e:
+            assert "HTTP 401" in str(e) and "download_models" in str(e), e
+    print("ok")

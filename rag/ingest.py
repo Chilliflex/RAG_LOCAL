@@ -59,12 +59,16 @@ def ingest(pdf: Path, force: bool = False, rebuild: bool = False) -> dict:
 
     tri, toc, links, widths = stage("triage", parse.triage, src)
     n = len(tri)
-    stage("parse", parse.docling_pages, src, doc_dir, n,
-          on_progress=lambda done, total: _set_status(doc_id, stage="parse", done=done, total=total))
-    stage("handwriting", handwriting.run, src, doc_dir)
+    progress = lambda done, total: _set_status(doc_id, stage="parse", done=done, total=total)
+    if config.PROVIDER == "cloud":
+        stage("parse", _cloud_parse, doc_id, src, doc_dir, n, progress)
+    else:
+        stage("parse", parse.docling_pages, src, doc_dir, n, on_progress=progress)
+        stage("handwriting", handwriting.run, src, doc_dir)
     items = parse.load_pages(doc_dir)
     doc = stitch.build(doc_id, _title(items, pdf), n, items, widths, toc)
     doc["file"] = pdf.name
+    doc["parsed_with"] = sorted({i.get("source", "docling") for i in items})
     doc["urls"] = enrich.urls(doc["items"], links)
     doc["references"] = enrich.references(doc["items"], doc["sections"])
     doc["xrefs"] = enrich.xrefs(doc["items"], doc["sections"])
@@ -80,9 +84,47 @@ def ingest(pdf: Path, force: bool = False, rebuild: bool = False) -> dict:
     return {"doc_id": doc_id, **report}
 
 
+def _cloud_parse(doc_id, src, doc_dir, n, progress):
+    """Mistral OCR (it reads handwriting itself, so no TrOCR pass). If the API is unreachable or refuses us,
+    the pages still missing are parsed locally when the local models exist, and the status says so."""
+    from rag import cloud, parse_mistral
+    try:
+        cloud.require_keys()
+        parse_mistral.pages(src, doc_dir, n, on_progress=progress)
+    except (ConnectionError, ValueError) as e:
+        if not (config.DOCLING_ARTIFACTS.is_dir() and Path(config.HANDWRITING_MODEL).is_dir()):
+            raise ValueError(f"{e}. The local models are not installed either (python scripts/download_models.py), so this PDF cannot be parsed.") from None
+        print(f"  Mistral OCR unavailable ({e}); parsing the remaining pages locally", flush=True)
+        _set_status(doc_id, fallback="Mistral OCR was unavailable; the remaining pages were parsed locally")
+        parse.docling_pages(src, doc_dir, n, on_progress=progress)
+        handwriting.run(src, doc_dir)
+
+
 def _title(items, pdf):
     first = [i for i in items if i["page"] == 1]
     for i in first:
         if i["label"] == "title":
             return i["text"].strip()
     return next((i["text"].strip() for i in first if i["type"] == "heading"), pdf.stem)
+
+
+if __name__ == "__main__":  # self-check: API down -> local parse + status note; API down and no local models -> readable error
+    import tempfile
+    from unittest import mock
+
+    import pymupdf
+
+    config.MISTRAL_API_KEY = config.GOOGLE_API_KEY = "x"
+    with tempfile.TemporaryDirectory() as tmp, mock.patch("rag.config.DATA", Path(tmp)), \
+            mock.patch("rag.cloud.ocr", side_effect=ConnectionError("mistral_ocr failed after 3 attempts: ConnectError")), \
+            mock.patch("rag.parse.docling_pages") as docling, mock.patch("rag.handwriting.run") as hw:
+        with pymupdf.open() as d:
+            d.new_page(); d.save(Path(tmp) / "x.pdf")
+        _cloud_parse("abc", Path(tmp) / "x.pdf", Path(tmp) / "abc", 1, None)
+        assert docling.called and hw.called and "parsed locally" in status("abc")["fallback"]
+        with mock.patch("rag.config.DOCLING_ARTIFACTS", Path(tmp) / "none"):
+            try:
+                _cloud_parse("abc", Path(tmp) / "x.pdf", Path(tmp) / "abc", 1, None); raise AssertionError
+            except ValueError as e:
+                assert "ConnectError" in str(e) and "download_models" in str(e), e
+    print("ok")

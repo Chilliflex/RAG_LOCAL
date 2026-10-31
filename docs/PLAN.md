@@ -1,5 +1,7 @@
 # Multimodal PDF RAG: project plan
 
+Built and measured complete on 2026-10-30. This file describes the pipeline and the local (offline) mode. The second mode, "API, fast" (Mistral OCR + Gemini), the mode UI, fallbacks and the two-mode evaluation are in [PLAN_FINAL.md](PLAN_FINAL.md).
+
 Goal: accurate RAG over (A) dense mixed PDFs (handwriting, scans, tables, formulas, diagrams/flows, images, paper/site references) and (B) 100–200+ page PDFs with some of the same content. One pipeline; triage switches modules on. **Fully local and offline**: no API keys, no network calls at runtime. Internet only for the one-time package/model download; then `HF_HUB_OFFLINE=1`, telemetry off.
 
 ## Hardware constraints

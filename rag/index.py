@@ -17,6 +17,15 @@ def client() -> QdrantClient:
     return c
 
 
+def reset():
+    """After a mode switch: close the store so the next call opens the other mode's folder."""
+    if client.cache_info().currsize:
+        c = client()
+        atexit.unregister(c.close)
+        c.close()
+        client.cache_clear()
+
+
 def _ensure():
     if not client().collection_exists(COLLECTION):
         client().create_collection(

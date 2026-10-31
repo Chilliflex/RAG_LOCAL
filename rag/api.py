@@ -1,5 +1,6 @@
 """FastAPI service. Binds to 127.0.0.1 (see __main__). One GPU job at a time: ingest and ask share a lock."""
 import json
+import os
 import re
 import threading
 import traceback
@@ -11,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from rag import config, store
+from rag import config, index, store
 from rag.ingest import _set_status, doc_id_of, ingest, status
 
 # built-in Swagger/ReDoc pages load JS from a CDN (network) and would shadow our /docs route
@@ -21,7 +22,6 @@ LOCAL = {"127.0.0.1", "localhost"}
 # Only requests addressed to localhost, from localhost, are served.
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(LOCAL))
 GPU = threading.Lock()
-UPLOADS = config.DATA / "uploads"
 MAX_BYTES = 300 * 2**20
 
 
@@ -49,7 +49,7 @@ async def upload(file: UploadFile):
     doc_id = doc_id_of(data)
     if store.path(doc_id).exists():
         return {"doc_id": doc_id, "status": "already ingested"}
-    path = UPLOADS / doc_id / name  # per-document folder: two uploads named report.pdf never overwrite each other
+    path = config.DATA / "uploads" / doc_id / name  # per-document folder: two uploads named report.pdf never overwrite each other
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     _set_status(doc_id, stage="queued", file=name)
@@ -77,6 +77,40 @@ def get_status(doc_id: str):
     return s
 
 
+@app.get("/doctor")
+def doctor():
+    from rag.doctor import run
+    return run()
+
+
+class Mode(BaseModel):
+    provider: str
+    mistral_api_key: str = ""
+    google_api_key: str = ""
+
+
+@app.get("/mode")
+def get_mode():
+    """Never returns key values, only whether one is stored."""
+    return {"provider": config.PROVIDER, "chosen": "provider" in config.load_settings(),
+            "env_override": "PROVIDER" in os.environ,  # .env wins at the next start
+            "keys": {"mistral": bool(config.MISTRAL_API_KEY), "google": bool(config.GOOGLE_API_KEY)}}
+
+
+@app.post("/mode")
+def set_mode(m: Mode):
+    if m.provider not in ("local", "cloud"):
+        raise HTTPException(400, "provider must be 'local' or 'cloud'")
+    if not GPU.acquire(timeout=2):
+        raise HTTPException(409, "Busy ingesting a document; switch mode when it finishes.")
+    try:
+        config.set_mode(m.provider, mistral_api_key=m.mistral_api_key.strip(), google_api_key=m.google_api_key.strip())
+        index.reset()
+    finally:
+        GPU.release()
+    return get_mode()
+
+
 @app.get("/docs")
 def docs():
     out = []
@@ -101,6 +135,8 @@ def ask(req: Ask):
         raise HTTPException(409, "Busy ingesting a document; ask again when it finishes.")
     try:
         return run(req.question.strip()[:2000], req.doc_ids or None)
+    except (ValueError, ConnectionError) as e:  # API refused or unreachable and no local model to fall back on
+        raise HTTPException(503, str(e))
     finally:
         GPU.release()
 
@@ -112,4 +148,15 @@ if __name__ == "__main__":  # self-check: foreign host / origin refused, local a
     assert c.post("/upload", headers={"origin": "https://evil.com"}, files={"file": ("x.pdf", b"%PDF-1.4")}).status_code == 403
     assert c.post("/upload", headers={"origin": "http://127.0.0.1:8000"}, files={"file": ("x.txt", b"hello")}).status_code == 415
     assert c.get("/status/../etc").status_code in (400, 404) and c.get("/docs").status_code == 200
+    d = c.get("/doctor").json()
+    assert {"local", "api", "apis"} <= set(d) and "sk-" not in json.dumps(d)
+    # mode switch: persisted (saving stubbed here), keys never echoed, bad provider refused, cross-site refused
+    config.save_settings = lambda **kw: None
+    before = config.PROVIDER
+    assert c.post("/mode", json={"provider": "lcoal"}).status_code == 400
+    assert c.post("/mode", headers={"origin": "https://evil.com"}, json={"provider": "cloud"}).status_code == 403
+    m = c.post("/mode", json={"provider": "cloud", "google_api_key": "sk-test-secret"}).json()
+    assert m["provider"] == "cloud" and m["keys"]["google"] and "sk-test" not in json.dumps(m) and config.DATA.name == "data-cloud"
+    config.set_mode(before, google_api_key="")  # back to the real mode; the test key stays only in this process
+    assert c.get("/mode").json()["provider"] == before
     print("ok")

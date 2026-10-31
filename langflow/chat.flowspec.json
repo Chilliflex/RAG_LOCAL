@@ -1,0 +1,29 @@
+{
+  "name": "PDF RAG (API) - Chat",
+  "description": "Answer questions from the ingested PDFs with Gemini, citing page numbers.",
+  "nodes": [
+    {"name": "chat_input", "component": "ChatInput"},
+    {"name": "embeddings", "component": "ext:mistral:MistralAIEmbeddingsComponent@official", "params": {"mistral_api_key": "$var:MISTRAL_API_KEY", "model": "mistral-embed"}},
+    {"name": "qdrant", "component": "ext:qdrant:QdrantVectorStoreComponent@official", "params": {"collection_name": "pdf_rag", "url": "https://YOUR-CLUSTER.cloud.qdrant.io:6333", "host": "", "api_key": "$var:QDRANT_API_KEY", "number_of_results": 6}},
+    {"name": "parser", "component": "ParserComponent", "params": {"mode": "Parser", "pattern": "[{source}, p. {page}]\n{text}", "sep": "\n\n---\n\n"}},
+    {"name": "prompt", "component": "Prompt Template", "params": {"template": "Answer the question using only the passages below. After each fact, cite its page as (p. N). If the passages do not contain the answer, say it is not in the document.\n\nPassages:\n{context}\n\nQuestion: {question}"}},
+    {"name": "gemini", "component": "ext:google:GoogleGenerativeAIComponent@official", "params": {"api_key": "$var:GOOGLE_API_KEY", "model_name": "gemini-2.5-flash", "temperature": 0.1}},
+    {"name": "chat_output", "component": "ChatOutput"}
+  ],
+  "edges": [
+    {"source": "chat_input", "source_output": "message", "target": "qdrant", "target_field": "search_query"},
+    {"source": "embeddings", "source_output": "embeddings", "target": "qdrant", "target_field": "embedding"},
+    {"source": "qdrant", "source_output": "search_results", "target": "parser", "target_field": "input_data"},
+    {"source": "parser", "source_output": "parsed_text", "target": "prompt", "target_field": "context"},
+    {"source": "chat_input", "source_output": "message", "target": "prompt", "target_field": "question"},
+    {"source": "prompt", "source_output": "prompt", "target": "gemini", "target_field": "input_value"},
+    {"source": "gemini", "source_output": "text_output", "target": "chat_output", "target_field": "input_value"}
+  ],
+  "rationale": "One retrieval and one Gemini call per question keeps cost low; source and page travel with each passage so answers can cite them.",
+  "assumptions": [
+    "Run the ingest flow first; both flows must use the same url and collection_name.",
+    "Create Langflow global variables MISTRAL_API_KEY, QDRANT_API_KEY and GOOGLE_API_KEY.",
+    "Left out on purpose: sparse or hybrid search, reranker, relevance gate and query router; search is dense only.",
+    "Left out on purpose: section summaries, so questions about the whole document only see the top 6 passages."
+  ]
+}
