@@ -20,6 +20,14 @@ The app turns a PDF into a searchable structured document, then answers question
 | Handwriting | TrOCR-base-handwritten | Mistral OCR | `handwriting.run` / `parse_mistral.pages` |
 | Figure descriptions | SmolVLM-256M (inside Docling) | Gemini 2.5 Flash | `parse._converter` / `cloud.describe_image` |
 | Stitching, references, cross-references | Plain Python and regex | Same | `stitch.build`, `enrich.*` |
+| Section tree (outline) | Bookmarks > contents page > headings scored by numbering, font, position | Same (no font data) | `outline.build` |
+| Document metadata | Plain Python, PyMuPDF | Same | `meta.build` |
+| Section tree (outline) | Bookmarks > contents page > headings scored by numbering, font, position | Same (no font data) | `outline.build` |
+| Document metadata | Plain Python, PyMuPDF | Same | `meta.build` |
+| Section tree (outline) | Bookmarks > contents page > headings scored by numbering, font, position | Same (no font data) | `outline.build` |
+| Document metadata | Plain Python, PyMuPDF | Same | `meta.build` |
+| Section tree (outline) | Bookmarks > contents page > headings scored by numbering, font, position | Same (no font data) | `outline.build` |
+| Document metadata | Plain Python, PyMuPDF | Same | `meta.build` |
 | Summaries, answers, sub-questions | Qwen2.5-3B Q4_K_M GGUF, llama.cpp | Gemini 2.5 Flash | `models.generate` |
 | Chunking | Plain Python | Same | `chunk.build` |
 | Embeddings | BGE-M3 dense + sparse | Same, local | `index.encode` |
@@ -52,7 +60,9 @@ RAG/
 │   ├── parse.py                Triage + Docling parsing (local)
 │   ├── parse_mistral.py        Mistral markdown to items (API)
 │   ├── handwriting.py          TrOCR pass over page checkpoints (local)
-│   ├── stitch.py               Pages to one document: merges, captions, section tree
+│   ├── stitch.py               Pages to one document: merges, captions; calls outline
+│   ├── outline.py              Book-style section tree: bookmarks, contents page, heading scoring
+│   ├── meta.py                 Document metadata (file, pages, content, visuals, structure, quality)
 │   ├── enrich.py               References, URLs, cross-references (regex)
 │   ├── summarize.py            Section and document summaries
 │   ├── chunk.py                Document to searchable chunks
@@ -121,14 +131,15 @@ UI: POST /upload → api.upload → thread: api._ingest          CLI: __main__._
                                   → items → blocks, _describe        (Gemini)
               on failure → the local path above for pages still missing
   3 parse.load_pages                 all pages/*.json into one list
-  4 stitch.build                     _margin_notes, _attach_captions,
-                                     _merge_cross_page, section tree
+  4 stitch.build                     _margin_notes, _attach_captions, _merge_cross_page
+    -> outline.build                 bookmarks > contents page > headings; drops false headings
   5 enrich.urls, references, xrefs   regex
   6 summarize.run → models.generate  Qwen or Gemini
   7 chunk.build                      chunks + summary nodes
   8 index.add → encode               BGE-M3 → Qdrant
   9 audit.run                        audit.json
- 10 store.save                       document.json, written last
+ 10 meta.build                       doc["meta"] (+ API cost from the usage log in cloud mode)
+ 11 store.save                       document.json, written last
 ```
 
 ### Question
@@ -137,15 +148,16 @@ UI: POST /upload → api.upload → thread: api._ingest          CLI: __main__._
 UI: POST /ask → api.ask                                     CLI: __main__._run
                      └───────► query.ask → query._ask ◄──────┘
   route(q) picks one:
-    lookup    → _lookup                      from document.json, no model
+    lookup    → _lookup                      from document.json / outline / meta, no model
     whole_doc → _whole_doc                   map-reduce over section summaries
     section   → _find_section, _section_passage → _answer
     multi_hop → _decompose, then as fact
-    fact      → retrieve → index.search      BGE-M3 → Qdrant dense + sparse → RRF
-                         → reranker          bge-reranker-base, keep TOP_K
+    fact      → retrieve → index.search      BGE-M3 → Qdrant dense + sparse → RRF, 2k candidates
+                         → reranker          bge-reranker-base, keep k (from the depth setting)
               → RELEVANCE_MIN gate           below it: "Not found in the documents."
+              → SCORE_RATIO filter           chunks under 10% of the best score are dropped
               → _expand                      neighbours + linked table/figure/formula
-              → _answer → _context           token budget
+              → _answer → _context           depth budget, capped by the LLM window
                         → models.generate    Qwen or Gemini
                         → _cite              normalises to (p. N)
 ```
@@ -174,7 +186,9 @@ Optional fields:
 
 | Field | Set for | Meaning |
 |---|---|---|
-| `level` | Headings | Heading depth |
+| `level` | Headings | Heading depth from the parser |
+| `font` | Text and headings, digital pages, local mode | `{size, bold}` from PyMuPDF spans, used to promote bold short lines to headings |
+| `bookmark_level`, `synthetic`, `promoted` | Headings | Matched a bookmark; created from an unmatched bookmark; promoted from text by font |
 | `caption` | Tables, figures | Caption text |
 | `picture_class` | Figures, local mode | Classifier label |
 | `ocr_cells` | Text, local mode | OCR lines: `{bbox, text, conf}` |
@@ -189,7 +203,10 @@ Optional fields:
  "summary": "whole-document summary",
  "items": ["item, ..."],
  "sections": [{"id": "s2", "title": "1 Intro", "level": 1, "parent": "s0", "ancestors": ["s0"],
-               "path": ["1 Intro"], "pages": [3, 9], "summary": "..."}],
+               "path": ["1 Intro"], "pages": [3, 9], "bookmarked": true, "summary": "..."}],
+ "outline": {"source": "bookmarks | contents | headings", "levels": {"1": 10, "2": 30}, "total": 40, "bookmarked": 38,
+             "unbookmarked": ["REFERENCES"], "approximate": false},
+ "meta": {"file": {}, "pages": {}, "content": {}, "visuals": {}, "structure": {}, "links": {}, "quality": {}, "processing": {}},
  "urls": [{"page": 4, "url": "https://..."}],
  "references": [{"page": 170, "item_id": "p170_2", "text": "[1] ...", "doi": null, "arxiv": null}],
  "xrefs": [{"from": "p5_1", "to": "p6_0", "label": "Table 1"}]}
@@ -207,11 +224,13 @@ Optional fields:
 **Answer**: returned by `query.ask` and `POST /ask`.
 
 ```json
-{"answer": "... (p. 5)", "route": "fact", "provider": "local",
- "sources": [{"doc_id": "...", "pages": [5], "section": "...", "score": 0.91, "type": "text", "text": "first 300 characters"}]}
+{"answer": "... (p. 5)", "route": "fact", "provider": "local", "depth": "fast", "depth": "fast", "depth": "fast", "depth": "fast",
+ "sources": [{"doc_id": "...", "pages": [5], "section": "...", "score": 0.91, "type": "text", "text": "first 300 characters"}],
+ "chunks": [{"rank": 1, "score": 0.91, "pages": [5], "section": "...", "type": "text", "text": "the chunk's full text",
+             "added": [{"label": "Text before", "text": "..."}], "sent": true, "truncated": false}]}
 ```
 
-`provider` is `"local"` in API mode when Gemini failed and Qwen answered. In a `whole_doc` answer each source has only `doc_id`, `pages`, `section` and `type`.
+`provider` is `"local"` in API mode when Gemini failed and Qwen answered. In a `whole_doc` answer each source has only `doc_id`, `pages`, `section` and `type`. `chunks` is empty for lookup, whole-document and section answers. `below_relevance` is true when the gate stopped the model being called.
 
 **Other files:**
 
@@ -219,9 +238,9 @@ Optional fields:
 |---|---|
 | `status.json` | `stage` (`queued`, `triage`, `parse`, `handwriting`, `summaries`, `index`, `done`, `error`), `file`, `done`, `total`, `complete`, `error`, `fallback`, `updated` |
 | `audit.json` | `doc_id`, `pages`, `pages_with_items`, `scanned_pages`, `sections`, `toc_entries`, `references`, `urls`, `xrefs`, `counts`, `low_confidence`, `notes`, `gaps`, `complete`, `chunks` |
-| `settings.json` | `provider`, `mistral_api_key`, `google_api_key` |
+| `settings.json` | `provider`, `depth`, `mistral_api_key`, `google_api_key` |
 | `api_usage.jsonl` | One line per call: `time`, `op`, `seconds`, then `pages` and `bytes`, or `in_tokens` and `out_tokens`, or `error` |
-| `queries.jsonl` | `time`, `question`, `route`, `provider`, `seconds`, `sources`, `top_score`, `not_found` |
+| `queries.jsonl` | `time`, `question`, `route`, `provider`, `depth`, `seconds`, `sources`, `top_score`, `not_found` |
 | `samples/golden.json` | List of `{file, question, answer: [accepted phrases], pages, category}`. `category` is optional |
 
 ---
@@ -240,8 +259,9 @@ Runs once on import: loads `.env`, resolves `HF_HOME`, then sets module-level co
 |---|---|---|---|
 | [`load_settings`](rag/config.py#L16) | none | dict | Reads `data/settings.json`, or `{}` if it doesn't exist |
 | [`save_settings`](rag/config.py#L20) | `**kw` | none | Merges values into `settings.json` and restricts its permissions. Not atomic |
-| [`_derived`](rag/config.py#L27) | `provider` | `(data_dir, context_tokens)` | Values that depend on the mode. Raises `ValueError` on an unknown provider |
-| [`set_mode`](rag/config.py#L35) | `provider`, `**keys` | none | Switches mode in this process and persists it. Empty keys keep the stored ones. Callers must also call `index.reset()` |
+| [`_derived`](rag/config.py#L27) | `provider` | data dir | The mode's data folder. Raises `ValueError` on an unknown provider |
+| [`depth_settings`](rag/config.py#L40) | `depth=None` | `(name, budget, k)` | Passage budget and chunks kept for the requested depth, else the saved one, else the mode's first. `DEPTHS` holds the table |
+| [`set_mode`](rag/config.py#L47) | `provider`, `depth=None`, `**keys` | none | Switches mode (and depth) in this process and persists them. Empty keys keep the stored ones. Callers must also call `index.reset()` |
 
 #### [rag/store.py](rag/store.py): document storage
 
@@ -262,11 +282,17 @@ Self-check: `generate` falls back correctly when Gemini fails.
 | [`free`](rag/models.py#L12) | none | none | torch, gc | Closes the LLM, clears all model caches, empties VRAM. Called between stages |
 | [`embedder`](rag/models.py#L23) | `device` | `BGEM3FlagModel` | FlagEmbedding, BGE-M3 | Cached loader; fp16 on CUDA |
 | [`reranker`](rag/models.py#L29) | `device` | `FlagReranker` | FlagEmbedding, bge-reranker-base | Cached loader |
-| [`llm`](rag/models.py#L35) | none | `Llama` | llama-cpp-python, Qwen GGUF | Cached loader. `n_ctx` = `LLM_CTX`; all layers on GPU when `DEVICE=cuda` |
-| [`generate`](rag/models.py#L46) | `system`, `user`, `max_new_tokens=512` | str | Gemini or Qwen | **The one LLM entry point.** Cloud calls `cloud.generate`; if that fails and the GGUF exists, Qwen answers and `last_provider` becomes `"local"`. Temperature 0 |
-| [`count_tokens`](rag/models.py#L62) | `text` | int | Qwen tokenizer or estimate | Used for the prompt budget |
-| [`trocr`](rag/models.py#L70) | none | `(processor, model)` | transformers | Cached TrOCR loader |
-| [`read_handwriting`](rag/models.py#L77) | list of single-line PIL images | list of `(text, confidence)` | TrOCR | Batches of 8. Confidence is the mean token probability |
+| [`_window`](rag/models.py#L42) | free GB, `with_reranker` | int | | The window formula: (free - reserve - model base - optional reranker) / cost per 1k, 4096 to `LLM_CTX_MAX` |
+| [`rerank_device`](rag/models.py#L48) | none | `cuda` or `cpu` | torch | Cached. GPU only when the reranker and an 8k LLM window fit together within the reserve; `RERANK_DEVICE` overrides |
+| [`free_memory_gb`](rag/models.py#L34) | none | `(gb, "VRAM" or "RAM")` | torch, psutil | Free memory where the LLM will run, measured now |
+| [`fit_context`](rag/models.py#L57) | none | int | | Largest window keeping `VRAM_RESERVE_GB` free; leaves room for the reranker only when it shares the GPU and is not loaded yet. `LLM_CTX` in `.env` overrides |
+| [`budgets`](rag/models.py#L65) | none | `{depth: tokens}` | | Effective passage budget per depth on this machine: configured value capped by the window |
+| [`llm`](rag/models.py#L72) | none | `Llama` | llama-cpp-python, Qwen GGUF | Cached loader. `n_ctx` = `fit_context()`; all layers on GPU when `DEVICE=cuda` |
+| [`context_window`](rag/models.py#L80) | none | int | | The LLM's window: 1,000,000 in cloud mode, else the loaded model's `n_ctx` |
+| [`generate`](rag/models.py#L87) | `system`, `user`, `max_new_tokens=512` | str | Gemini or Qwen | **The one LLM entry point.** Cloud calls `cloud.generate`; if that fails and the GGUF exists, Qwen answers and `last_provider` becomes `"local"`. Temperature 0 |
+| [`count_tokens`](rag/models.py#L103) | `text` | int | Qwen tokenizer or estimate | Used for the prompt budget |
+| [`trocr`](rag/models.py#L111) | none | `(processor, model)` | transformers | Cached TrOCR loader |
+| [`read_handwriting`](rag/models.py#L118) | list of single-line PIL images | list of `(text, confidence)` | TrOCR | Batches of 8. Confidence is the mean token probability |
 
 Module variable: `last_provider`, reset by `query.ask` at the start of each question.
 
@@ -295,7 +321,7 @@ Uses `httpx` directly, with no vendor SDK. Self-check: mocked retries, errors, u
 | Function | Input | Output | Purpose |
 |---|---|---|---|
 | [`main`](rag/__main__.py#L9) | `sys.argv` | none | Defines the subcommands. Turns `ValueError` and `ConnectionError` into a one-line error |
-| [`_run`](rag/__main__.py#L28) | parsed args | none | Runs one subcommand. To add a command, add it to both functions |
+| [`_run`](rag/__main__.py#L29) | parsed args | none | Runs one subcommand. To add a command, add it to both functions |
 
 ### Ingest pipeline, in order
 
@@ -310,9 +336,9 @@ Self-check: API-down fallback and the missing-models error.
 | [`status`](rag/ingest.py#L22) | `doc_id` | dict | Reads `status.json` |
 | [`_set_status`](rag/ingest.py#L27) | `doc_id`, `**kw` | none | Merges values into `status.json` |
 | [`ingest`](rag/ingest.py#L31) | `pdf`, `force=False`, `rebuild=False` | audit report + `doc_id`, or `skipped: true` | **Runs the whole pipeline.** `force` deletes everything and starts over. `rebuild` keeps pages and summaries and redoes stitching onward |
-| [`stage`](rag/ingest.py#L48) (nested) | `name`, `fn`, args | `fn`'s result | Sets status, times the stage, records peak VRAM, frees models |
-| [`_cloud_parse`](rag/ingest.py#L87) | `doc_id`, `src`, `doc_dir`, `n`, `progress` | none | Mistral parse. On `ConnectionError` or `ValueError`, parses the remaining pages locally and records `fallback`. Raises a readable error if local models are missing |
-| [`_title`](rag/ingest.py#L103) | items, `pdf` | str | First title or heading on page 1, else the file name |
+| [`stage`](rag/ingest.py#L49) (nested) | `name`, `fn`, args | `fn`'s result | Sets status, times the stage, records peak VRAM, frees models |
+| [`_cloud_parse`](rag/ingest.py#L97) | `doc_id`, `src`, `doc_dir`, `n`, `progress` | none | Mistral parse. On `ConnectionError` or `ValueError`, parses the remaining pages locally and records `fallback`. Raises a readable error if local models are missing |
+| [`_title`](rag/ingest.py#L113) | items, `pdf` | str | First title or heading on page 1, else the file name |
 
 #### [rag/parse.py](rag/parse.py): triage and local parsing
 
@@ -321,9 +347,10 @@ Self-check: API-down fallback and the missing-models error.
 | [`triage`](rag/parse.py#L16) | PDF path | `(pages, toc, links, widths)` | PyMuPDF | Per page: `chars`, `images`, `scanned` (under 50 characters and has an image). Runs in both modes |
 | [`_converter`](rag/parse.py#L30) | none | `DocumentConverter` | Docling | Pipeline settings: RapidOCR, TableFormer, figure classifier, SmolVLM. Batch sizes hold peak VRAM inside 4 GB |
 | [`_ocr_cells`](rag/parse.py#L47) | `cells`, `bbox`, `height` | list of `{bbox, text, conf}` | none | OCR lines whose centre is inside a box. Text-layer text is excluded |
-| [`_items`](rag/parse.py#L63) | Docling result, PDF path | `{page: [items]}` | Docling, PyMuPDF | Converts Docling's document to item records. Tables export to markdown |
-| [`docling_pages`](rag/parse.py#L110) | `pdf`, `doc_dir`, `n_pages`, `on_progress` | none, writes `pages/` | Docling | Parses `PAGE_BATCH` pages at a time, skipping checkpointed pages |
-| [`load_pages`](rag/parse.py#L133) | `doc_dir` | list of items | none | Concatenates all checkpoints in page order |
+| [`_font`](rag/parse.py#L63) | spans, bbox | `{size, bold}` or None | PyMuPDF | Dominant size and bold share of the text-layer spans in a box |
+| [`_items`](rag/parse.py#L74) | Docling result, PDF path | `{page: [items]}` | Docling, PyMuPDF | Converts Docling's document to item records with `font` on digital pages. Tables export to markdown |
+| [`docling_pages`](rag/parse.py#L127) | `pdf`, `doc_dir`, `n_pages`, `on_progress` | none, writes `pages/` | Docling | Parses `PAGE_BATCH` pages at a time, skipping checkpointed pages |
+| [`load_pages`](rag/parse.py#L150) | `doc_dir` | list of items | none | Concatenates all checkpoints in page order |
 
 Constant: `LABELS` maps Docling labels to item types.
 
@@ -364,16 +391,106 @@ Plain Python. Self-check covers Docling-style and markdown-style input.
 
 | Function | Input | Output | Purpose |
 |---|---|---|---|
-| [`norm_title`](rag/stitch.py#L10) | title | str | Strips numbering and punctuation so `3.2 Attention` equals `Attention` |
-| [`_margin_notes`](rag/stitch.py#L15) | one page's items, `page_width` | items | Narrow body items outside the main text column become `margin_note`, placed after the item beside them |
-| [`_attach_captions`](rag/stitch.py#L41) | items | items | Moves `Table N:` / `Fig. N:` text to the nearest uncaptioned table or figure on the page. The document's own label decides the type |
-| [`_table_cols`](rag/stitch.py#L63) | markdown table | int | Column count of the first row |
-| [`_merge_cross_page`](rag/stitch.py#L68) | items | items | Joins paragraphs (no end punctuation, next starts lowercase) and tables (same column count, no new caption) across consecutive pages |
-| [`_is_page_start`](rag/stitch.py#L85) | item, items | bool | First on its page, ignoring margin notes |
-| [`_is_page_end`](rag/stitch.py#L89) | item, items | bool | Last on its page, ignoring margin notes, footnotes and figures |
-| [`_level`](rag/stitch.py#L94) | heading, `toc_levels` | int | Depth: bookmark, then numbering, then parser level |
-| [`build`](rag/stitch.py#L102) | `doc_id`, `title`, `pages`, `items`, `page_widths`, `toc` | document without urls, references, xrefs | **Main entry.** Runs the steps above and builds the section tree |
-| [`it`](rag/stitch.py#L136), [`slot`](rag/stitch.py#L153) | test values | item | Self-check helpers only |
+| [`_margin_notes`](rag/stitch.py#L11) | one page's items, `page_width` | items | Narrow body items outside the main text column become `margin_note`, placed after the item beside them |
+| [`_attach_captions`](rag/stitch.py#L37) | items | items | Moves `Table N:` / `Fig. N:` text to the nearest uncaptioned table or figure on the page. The document's own label decides the type |
+| [`_table_cols`](rag/stitch.py#L59) | markdown table | int | Column count of the first row |
+| [`_merge_cross_page`](rag/stitch.py#L64) | items | items | Joins paragraphs (no end punctuation, next starts lowercase) and tables (same column count, no new caption) across consecutive pages |
+| [`_is_page_start`](rag/stitch.py#L81) | item, items | bool | First on its page, ignoring margin notes |
+| [`_is_page_end`](rag/stitch.py#L85) | item, items | bool | Last on its page, ignoring margin notes, footnotes and figures |
+| [`build`](rag/stitch.py#L90) | `doc_id`, `title`, `pages`, `items`, `page_widths`, `toc` | document with `outline`, without urls, references, xrefs | **Main entry.** Runs the steps above, then `outline.build` for the section tree |
+| [`it`](rag/stitch.py#L107), [`slot`](rag/stitch.py#L124) | test values | item | Self-check helpers only |
+
+#### [rag/outline.py](rag/outline.py): book-style section tree
+
+Called by `stitch.build`. Self-check covers IEEE-style numbering with bookmarks, no bookmarks with a promoted bold line, and a printed contents page.
+
+| Function | Input | Output | Purpose |
+|---|---|---|---|
+| [`norm_title`](rag/outline.py#L17) | title | str | Strips numbering (`3.2`, `III-A`, `Chapter 3:`) and punctuation so titles compare equal |
+| [`number_level`](rag/outline.py#L23) | heading text, `roman_style` | int or None | Depth from numbering: `Chapter N` 1, `1.2.3` 3, `II.` 1, `III-A` 2, `A.` 2 in Roman-numbered documents |
+| [`looks_like_heading`](rag/outline.py#L39) | item, next item, body size | bool | Bold (>= 0.9), <= 12 words, no end punctuation, not smaller than body text, followed by body text |
+| [`contents_page`](rag/outline.py#L48) | items | bookmark-style list | Parses a printed "Contents" section (`title ..... page`); `[]` under 3 entries |
+| [`build`](rag/outline.py#L64) | items, bookmarks, title, pages | `(items, sections, outline)` | **Main entry.** Promotes and demotes headings, inserts synthetic headings for unmatched bookmarks, levels by bookmark > numbering > front/back-matter word > nesting > parser, builds the tree and the summary |
+| [`describe`](rag/outline.py#L148) | outline | str | "3 sections, 12 subsections (15 total; source: PDF bookmarks); 2 further headings..." |
+
+Constants: `NUMBER` (numbering regex), `MATTER` (abstract, references, appendix...), `MAX_LEVEL` 4.
+
+#### [rag/meta.py](rag/meta.py): document metadata
+
+| Function | Input | Output | Purpose |
+|---|---|---|---|
+| [`build`](rag/meta.py#L14) | `doc`, PDF path, triage, timings, `api_cost_usd` | meta dict | File (PyMuPDF metadata, size, encrypted), page types, text counts and words, figures by class, structure summary, link counts, OCR quality, processing |
+| [`count`](rag/meta.py#L52) | `doc`, noun | str or None | One-line answer for images, diagrams/charts, scanned pages, handwriting or words |
+| [`_types`](rag/meta.py#L73) | figure types | str | "bar_chart 3, photo 1" |
+
+#### [rag/outline.py](rag/outline.py): book-style section tree
+
+Called by `stitch.build`. Self-check covers IEEE-style numbering with bookmarks, no bookmarks with a promoted bold line, and a printed contents page.
+
+| Function | Input | Output | Purpose |
+|---|---|---|---|
+| [`norm_title`](rag/outline.py#L17) | title | str | Strips numbering (`3.2`, `III-A`, `Chapter 3:`) and punctuation so titles compare equal |
+| [`number_level`](rag/outline.py#L23) | heading text, `roman_style` | int or None | Depth from numbering: `Chapter N` 1, `1.2.3` 3, `II.` 1, `III-A` 2, `A.` 2 in Roman-numbered documents |
+| [`looks_like_heading`](rag/outline.py#L39) | item, next item, body size | bool | Bold (>= 0.9), <= 12 words, no end punctuation, not smaller than body text, followed by body text |
+| [`contents_page`](rag/outline.py#L48) | items | bookmark-style list | Parses a printed "Contents" section (`title ..... page`); `[]` under 3 entries |
+| [`build`](rag/outline.py#L64) | items, bookmarks, title, pages | `(items, sections, outline)` | **Main entry.** Promotes and demotes headings, inserts synthetic headings for unmatched bookmarks, levels by bookmark > numbering > front/back-matter word > nesting > parser, builds the tree and the summary |
+| [`describe`](rag/outline.py#L148) | outline | str | "3 sections, 12 subsections (15 total; source: PDF bookmarks); 2 further headings..." |
+
+Constants: `NUMBER` (numbering regex), `MATTER` (abstract, references, appendix...), `MAX_LEVEL` 4.
+
+#### [rag/meta.py](rag/meta.py): document metadata
+
+| Function | Input | Output | Purpose |
+|---|---|---|---|
+| [`build`](rag/meta.py#L14) | `doc`, PDF path, triage, timings, `api_cost_usd` | meta dict | File (PyMuPDF metadata, size, encrypted), page types, text counts and words, figures by class, structure summary, link counts, OCR quality, processing |
+| [`count`](rag/meta.py#L52) | `doc`, noun | str or None | One-line answer for images, diagrams/charts, scanned pages, handwriting or words |
+| [`_types`](rag/meta.py#L73) | figure types | str | "bar_chart 3, photo 1" |
+
+#### [rag/outline.py](rag/outline.py): book-style section tree
+
+Called by `stitch.build`. Self-check covers IEEE-style numbering with bookmarks, no bookmarks with a promoted bold line, and a printed contents page.
+
+| Function | Input | Output | Purpose |
+|---|---|---|---|
+| [`norm_title`](rag/outline.py#L17) | title | str | Strips numbering (`3.2`, `III-A`, `Chapter 3:`) and punctuation so titles compare equal |
+| [`number_level`](rag/outline.py#L23) | heading text, `roman_style` | int or None | Depth from numbering: `Chapter N` 1, `1.2.3` 3, `II.` 1, `III-A` 2, `A.` 2 in Roman-numbered documents |
+| [`looks_like_heading`](rag/outline.py#L39) | item, next item, body size | bool | Bold (>= 0.9), <= 12 words, no end punctuation, not smaller than body text, followed by body text |
+| [`contents_page`](rag/outline.py#L48) | items | bookmark-style list | Parses a printed "Contents" section (`title ..... page`); `[]` under 3 entries |
+| [`build`](rag/outline.py#L64) | items, bookmarks, title, pages | `(items, sections, outline)` | **Main entry.** Promotes and demotes headings, inserts synthetic headings for unmatched bookmarks, levels by bookmark > numbering > front/back-matter word > nesting > parser, builds the tree and the summary |
+| [`describe`](rag/outline.py#L148) | outline | str | "3 sections, 12 subsections (15 total; source: PDF bookmarks); 2 further headings..." |
+
+Constants: `NUMBER` (numbering regex), `MATTER` (abstract, references, appendix...), `MAX_LEVEL` 4.
+
+#### [rag/meta.py](rag/meta.py): document metadata
+
+| Function | Input | Output | Purpose |
+|---|---|---|---|
+| [`build`](rag/meta.py#L14) | `doc`, PDF path, triage, timings, `api_cost_usd` | meta dict | File (PyMuPDF metadata, size, encrypted), page types, text counts and words, figures by class, structure summary, link counts, OCR quality, processing |
+| [`count`](rag/meta.py#L52) | `doc`, noun | str or None | One-line answer for images, diagrams/charts, scanned pages, handwriting or words |
+| [`_types`](rag/meta.py#L73) | figure types | str | "bar_chart 3, photo 1" |
+
+#### [rag/outline.py](rag/outline.py): book-style section tree
+
+Called by `stitch.build`. Self-check covers IEEE-style numbering with bookmarks, no bookmarks with a promoted bold line, and a printed contents page.
+
+| Function | Input | Output | Purpose |
+|---|---|---|---|
+| [`norm_title`](rag/outline.py#L17) | title | str | Strips numbering (`3.2`, `III-A`, `Chapter 3:`) and punctuation so titles compare equal |
+| [`number_level`](rag/outline.py#L23) | heading text, `roman_style` | int or None | Depth from numbering: `Chapter N` 1, `1.2.3` 3, `II.` 1, `III-A` 2, `A.` 2 in Roman-numbered documents |
+| [`looks_like_heading`](rag/outline.py#L39) | item, next item, body size | bool | Bold (>= 0.9), <= 12 words, no end punctuation, not smaller than body text, followed by body text |
+| [`contents_page`](rag/outline.py#L48) | items | bookmark-style list | Parses a printed "Contents" section (`title ..... page`); `[]` under 3 entries |
+| [`build`](rag/outline.py#L64) | items, bookmarks, title, pages | `(items, sections, outline)` | **Main entry.** Promotes and demotes headings, inserts synthetic headings for unmatched bookmarks, levels by bookmark > numbering > front/back-matter word > nesting > parser, builds the tree and the summary |
+| [`describe`](rag/outline.py#L148) | outline | str | "3 sections, 12 subsections (15 total; source: PDF bookmarks); 2 further headings..." |
+
+Constants: `NUMBER` (numbering regex), `MATTER` (abstract, references, appendix...), `MAX_LEVEL` 4.
+
+#### [rag/meta.py](rag/meta.py): document metadata
+
+| Function | Input | Output | Purpose |
+|---|---|---|---|
+| [`build`](rag/meta.py#L14) | `doc`, PDF path, triage, timings, `api_cost_usd` | meta dict | File (PyMuPDF metadata, size, encrypted), page types, text counts and words, figures by class, structure summary, link counts, OCR quality, processing |
+| [`count`](rag/meta.py#L52) | `doc`, noun | str or None | One-line answer for images, diagrams/charts, scanned pages, handwriting or words |
+| [`_types`](rag/meta.py#L73) | figure types | str | "bar_chart 3, photo 1" |
 
 #### [rag/enrich.py](rag/enrich.py): references and links
 
@@ -430,25 +547,26 @@ Uses Qdrant embedded on disk, which only one process can open at a time.
 
 #### [rag/query.py](rag/query.py): router, retrieval, answers
 
-No self-check; covered by `rag eval`.
+Self-check: the chunk view, with fake retrieval and LLM. Answers are covered by `rag eval`.
 
 | Function | Input | Output | Uses | Purpose |
 |---|---|---|---|---|
-| [`route`](rag/query.py#L21) | question | `lookup`, `whole_doc`, `section`, `multi_hop` or `fact` | regex | First match wins, in that order |
-| [`ask`](rag/query.py#L28) | `q`, `doc_ids=None` | Answer | | **Public entry.** Adds `provider`, appends to `queries.jsonl` |
-| [`_ask`](rag/query.py#L41) | `q`, `doc_ids` | Answer | | Dispatches by route. Applies the `RELEVANCE_MIN` gate |
-| [`retrieve`](rag/query.py#L69) | `q`, `doc_ids`, `k=TOP_K` | scored chunks | BGE-M3, Qdrant, bge-reranker-base | Hybrid search for 20 candidates, rerank, keep `k` |
-| [`_expand`](rag/query.py#L79) | passages, docs | passages | | Adds up to 400 characters from each neighbour and up to 2 linked items |
-| [`_context`](rag/query.py#L102) | passages, `budget_tokens=None` | prompt text | `count_tokens` | Stops at `CONTEXT_TOKENS`; cuts the first passage if it alone is too long |
-| [`_answer`](rag/query.py#L118) | `q`, passages, `kind` | Answer | `models.generate` | The single answer call |
-| [`_cite`](rag/query.py#L125) | answer, passages | str | regex | Normalizes citations to `(p. N)`; adds one if missing |
-| [`_lookup`](rag/query.py#L137) | `q`, docs | str or None | | Lists or counts tables, figures, formulas, URLs, references, sections, pages. No model |
-| [`_find_section`](rag/query.py#L165) | `q`, docs | `(doc, section)` or None | | Matches a section by number or title word |
-| [`_section_passage`](rag/query.py#L176) | `doc`, section | passage | | Section plus subsections, first 9000 characters |
-| [`_decompose`](rag/query.py#L184) | `q` | list of questions | `models.generate` | The original question plus up to 3 sub-questions |
-| [`_whole_doc`](rag/query.py#L195) | `q`, docs | Answer | `models.generate` | Batches of section summaries to notes, then one combined answer |
+| [`route`](rag/query.py#L22) | question | `lookup`, `whole_doc`, `section`, `multi_hop` or `fact` | regex | First match wins, in that order |
+| [`ask`](rag/query.py#L29) | `q`, `doc_ids=None`, `depth=None` | Answer | | **Public entry.** Resolves the depth, adds `provider` and `depth`, appends to `queries.jsonl` |
+| [`_ask`](rag/query.py#L45) | `q`, `doc_ids`, `budget`, `k` | Answer | | Dispatches by route. Applies the `RELEVANCE_MIN` gate and the `SCORE_RATIO` filter |
+| [`retrieve`](rag/query.py#L75) | `q`, `doc_ids`, `k=TOP_K` | scored chunks | BGE-M3, Qdrant, bge-reranker-base on `rerank_device()` | Hybrid search for max(20, 2k) candidates, rerank, keep `k` |
+| [`_expand`](rag/query.py#L85) | passages, docs | passages | | Adds up to 400 characters from each neighbour and up to 2 linked items |
+| [`_chunk_view`](rag/query.py#L111) | rank, passage | chunk card dict | | One retrieved chunk for the UI: own text and pages, added context, `sent`, `truncated` |
+| [`_context`](rag/query.py#L117) | passages, `budget_tokens=None` | prompt text | `count_tokens`, `context_window` | Stops at the budget, never past window - `ANSWER_TOKENS` - 600; None = fill the window. Cuts the first passage if it alone is too long. Marks passages `sent` and `truncated` |
+| [`_answer`](rag/query.py#L136) | `q`, passages, `kind`, `budget` | Answer | `models.generate` | The single answer call, up to `ANSWER_TOKENS` |
+| [`_cite`](rag/query.py#L144) | answer, passages | str | regex | Normalizes citations to `(p. N)`; adds one if missing |
+| [`_lookup`](rag/query.py#L156) | `q`, docs | str or None | | Lists or counts tables, figures, formulas, URLs, references, sections (per level, with source), images, diagrams, scanned pages, handwriting, words, pages. No model |
+| [`_find_section`](rag/query.py#L189) | `q`, docs | `(doc, section)` or None | | Matches a section by number or title word |
+| [`_section_passage`](rag/query.py#L200) | `doc`, section | passage | | Section plus subsections, first 9000 characters |
+| [`_decompose`](rag/query.py#L208) | `q` | list of questions | `models.generate` | The original question plus up to 3 sub-questions |
+| [`_whole_doc`](rag/query.py#L219) | `q`, docs | Answer | `models.generate` | Batches of section summaries to notes, then one combined answer |
 
-Constants: `SYSTEM` (answer prompt), `NOT_FOUND`, and the regexes `LOOKUP`, `WHOLE`, `SECTION`, `MULTI`.
+Constants: `SYSTEM` (answer prompt), `NOT_FOUND`, and the regexes `LOOKUP` (structure nouns with list/count words), `COUNT` (words, scanned pages, handwriting with count words only), `WHOLE`, `SECTION`, `MULTI`.
 
 #### [rag/evaluate.py](rag/evaluate.py): evaluation
 
@@ -475,11 +593,12 @@ Binds to 127.0.0.1. Self-check: foreign host and origin refused, non-PDF refused
 | [`_ingest`](rag/api.py#L60) | Thread body: holds the `GPU` lock, records failures in `status.json` |
 | [`get_status`](rag/api.py#L70) | Status plus audit; validates the ID format |
 | [`doctor`](rag/api.py#L81) | Calls `doctor.run` |
-| [`Mode`](rag/api.py#L86), [`Ask`](rag/api.py#L124) | Request bodies (pydantic) |
-| [`get_mode`](rag/api.py#L93) | Mode and whether keys exist, never their values |
-| [`set_mode`](rag/api.py#L101) | Validates, switches mode, closes the store. 409 while busy |
-| [`docs`](rag/api.py#L115) | Lists documents |
-| [`ask`](rag/api.py#L130) | Holds the `GPU` lock (409 if busy), caps questions at 2000 characters, returns API failures as 503 |
+| [`Mode`](rag/api.py#L86), [`Ask`](rag/api.py#L141) | Request bodies (pydantic) |
+| [`get_mode`](rag/api.py#L94) | Mode and whether keys exist, never their values |
+| [`set_mode`](rag/api.py#L107) | Validates provider and depth, switches mode, closes the store. 409 while busy |
+| [`doc_details`](rag/api.py#L123) | `GET /doc/{id}`: title, `meta`, `outline` and the section list |
+| [`docs`](rag/api.py#L132) | Lists documents |
+| [`ask`](rag/api.py#L148) | Holds the `GPU` lock (409 if busy), caps questions at 2000 characters, returns API failures as 503 |
 
 #### [rag/doctor.py](rag/doctor.py): requirement checks
 
@@ -490,7 +609,7 @@ Self-check: mocked network; key values never appear in the report.
 | [`_check`](rag/doctor.py#L21) | `name`, `ok`, `detail` | check dict | One line of the report |
 | [`_models`](rag/doctor.py#L25) | model list | checks | Tests each model folder exists and isn't empty |
 | [`run`](rag/doctor.py#L34) | none | `provider`, `local`, `api`, `apis`, `local_models`, `api_models` | Measures Python, GPU, VRAM, RAM, disk, models, internet and keys |
-| [`render`](rag/doctor.py#L63) | report | str | Terminal output |
+| [`render`](rag/doctor.py#L69) | report | str | Terminal output |
 
 Constants: `LOCAL_MODELS`, `API_MODELS`, `APIS`. **Edit `APIS` to change the prices and links shown in the UI**, and `cloud.PRICES` to change cost calculations.
 
@@ -505,10 +624,19 @@ One file with no build step and no external scripts or fonts. Colours are CSS va
 | `loadMode()` | `GET /mode`, then shows the cards or the main page |
 | `check(c)` | Renders one requirement line |
 | `showReq(p)` | `GET /doctor`, renders the requirements panel and key fields, wires `POST /mode` |
+| `showDetails(id, el)` | `GET /doc/{id}` on first open: metadata table and outline tree |
+| `$("depth").onchange` | Persists the chosen depth through `POST /mode` |
+| `showDetails(id, el)` | `GET /doc/{id}` on first open: metadata table and outline tree |
+| `$("depth").onchange` | Persists the chosen depth through `POST /mode` |
+| `showDetails(id, el)` | `GET /doc/{id}` on first open: metadata table and outline tree |
+| `$("depth").onchange` | Persists the chosen depth through `POST /mode` |
+| `showDetails(id, el)` | `GET /doc/{id}` on first open: metadata table and outline tree |
+| `$("depth").onchange` | Persists the chosen depth through `POST /mode` |
 | `loadDocs()` | `GET /docs`, renders the document list |
 | `poll(id)` | `GET /status/{id}` every 2 s until `done` or `error` |
 | `$("upload").onclick` | `POST /upload`, then polls |
-| `$("ask").onclick` | `POST /ask`, renders the answer and sources. Ctrl+Enter also sends |
+| `renderChunks(j)` | Renders the "Retrieved chunks" cards, or says why a route has none |
+| `$("ask").onclick` | `POST /ask`, renders the answer and chunks, or sources when there are no chunks. Ctrl+Enter also sends |
 
 Constants: `NAMES`, `LOCAL_METHODS`, `API_METHODS` (text on the panels). The comparison on the two mode cards is plain HTML.
 
@@ -543,9 +671,10 @@ All endpoints are served only on `127.0.0.1` or `localhost`. POSTs from other or
 | `POST /upload` | Multipart `file` | `{doc_id, status: "queued" or "already ingested"}` | 413 over 300 MB, 415 not a PDF |
 | `GET /status/{doc_id}` | | `status.json` contents, plus `audit` when ready | 400 bad ID |
 | `GET /docs` | | `[{doc_id, title, file, pages, complete}]` | |
-| `POST /ask` | `{question, doc_ids}`; `doc_ids` may be null | Answer | 400 empty question, 409 busy ingesting, 503 API failed with no fallback |
-| `GET /mode` | | `{provider, chosen, env_override, keys: {mistral, google}}`, where `keys` are booleans | |
-| `POST /mode` | `{provider, mistral_api_key, google_api_key}` | Same as `GET /mode` | 400 bad provider, 409 busy |
+| `POST /ask` | `{question, doc_ids, depth}`; `doc_ids` and `depth` may be null | Answer | 400 empty question, 409 busy ingesting, 503 API failed with no fallback |
+| `GET /mode` | | `{provider, chosen, env_override, keys: {mistral, google}, depth, depths, budgets, window, answer_tokens}`, where `keys` are booleans | |
+| `POST /mode` | `{provider, depth, mistral_api_key, google_api_key}` | Same as `GET /mode` | 400 bad provider or depth, 409 busy |
+| `GET /doc/{doc_id}` | | `{doc_id, title, meta, outline, sections}` | 404 unknown |
 | `GET /doctor` | | The `doctor.run` report | |
 
 ---
@@ -568,9 +697,15 @@ Set these in `.env` unless marked as a code constant.
 | `LLM_REPO`, `LLM_FILE` | Qwen2.5-3B GGUF | `config.py` | Local LLM; re-run the download script |
 | `PAGE_BATCH` (code) | 10 | `parse.docling_pages` | Lower uses less memory |
 | `CHUNK_TOKENS` (code) | 350 | `chunk.py` | Chunk size; requires `ingest --rebuild` |
-| `TOP_K` (code) | 6 | `query.retrieve` | Passages kept after reranking |
-| `CONTEXT_TOKENS` (code) | 2500 local, 12000 cloud | `config._derived` | Passage budget per answer |
-| `LLM_CTX` (code) | 8192 | `models.llm` | Qwen context window |
+| `DEPTH` | first of the mode | `config.depth_settings` | `fast`/`balanced`/`maximum` (local) or `standard`/`thorough`/`maximum` (cloud); also saved from the UI |
+| `DEPTHS` (code) | see file | `config` | Per depth: passage budget and chunks kept (`k`); local `maximum` fills the window |
+| `TOP_K` (code) | 6 | `query.retrieve` default | Chunks kept when no depth applies |
+| `LLM_CTX` | 0 | `models.fit_context` | Fixed window; 0 = size from free memory |
+| `VRAM_RESERVE_GB` | 0.75 | `models.fit_context` | Memory kept free when sizing the window |
+| `LLM_VRAM_BASE_GB`, `LLM_VRAM_PER_1K_GB`, `RERANKER_VRAM_GB`, `LLM_CTX_MAX` (code) | 1.8, 0.08, 0.6, 32768 | `models._window` | Measured memory cost of the 3B Q4 model and the reranker; re-measure for another model |
+| `RERANK_DEVICE` | `auto` | `models.rerank_device` | `auto` puts the reranker on the CPU when it and an 8k LLM window don't fit together; `cuda` or `cpu` forces it |
+| `ANSWER_TOKENS` (code) | 1024 local, 2048 cloud | `query._answer` | Longest answer |
+| `SCORE_RATIO` | 0 | `query._ask` | Chunks under this share of the best reranker score are not sent; 0 = off. 0.1 cost 5 of 53 answers in testing |
 | `MIN_WORDS`, `MAX_WORDS` (code) | 60, 1800 | `summarize.py` | Which sections get summaries, and how much text is read |
 | `MAX_PAGES`, `MAX_BYTES` (code) | 1000, 50 MB | `parse_mistral.py` | Mistral request limits |
 | `PRICES` (code) | See file | `cloud.py` | Used for cost reports |
@@ -583,7 +718,10 @@ Set these in `.env` unless marked as a code constant.
 |---|---|---|
 | The answer's wording or style | `query.SYSTEM` | `rag eval` |
 | Which route a question takes | Regexes at the top of `query.py` | `rag eval` |
-| Retrieval quality | `index.search`, `query.retrieve`, `TOP_K`, `RELEVANCE_MIN` | `rag eval` |
+| Retrieval quality | `index.search`, `query.retrieve`, `DEPTHS`, `SCORE_RATIO`, `RELEVANCE_MIN` | `rag eval` |
+| Section detection or levels | `outline.build`, `NUMBER`, `MATTER`, `looks_like_heading` | `rag.outline`, then `ingest --rebuild` |
+| Metadata fields or count answers | `meta.build`, `meta.count`, the `LOOKUP` and `COUNT` regexes | `rag.meta`, `rag.query`, then `ingest --rebuild` |
+| Memory reserve, window or reranker placement | `VRAM_RESERVE_GB`, `LLM_CTX`, `RERANK_DEVICE` in `.env`; `_window` for the formula | `rag doctor` shows the window and the reranker device |
 | Citation format | `query._cite` | `rag eval` |
 | Chunk size or rules | `chunk.build`, `CHUNK_TOKENS` | `rag.chunk`, then `ingest --rebuild` on each PDF |
 | Margin note, caption or merge rules | `stitch.py` | `rag.stitch`, then `ingest --rebuild` |
@@ -591,7 +729,7 @@ Set these in `.env` unless marked as a code constant.
 | A new item type | `parse.LABELS` or `parse_mistral.blocks`, plus `chunk.ATOMIC` and `chunk._render` if needed | `ingest --force` |
 | Figure description prompt | `cloud.DESCRIBE` | `ingest --force` in API mode |
 | Summary prompt | `summarize.SYS` | Delete `summaries.json`, then `ingest --rebuild` |
-| The local LLM | `LLM_REPO`, `LLM_FILE`; lower the budget if `LLM_CTX` is smaller | Run the download script, then `rag eval` |
+| The local LLM | `LLM_REPO`, `LLM_FILE`, and re-measure `LLM_VRAM_BASE_GB` / `LLM_VRAM_PER_1K_GB` | Run the download script, then `rag eval` |
 | The API LLM | `GEMINI_MODEL`. Another provider: add a function in `cloud.py` and call it from `generate` and `describe_image` | `rag.cloud`, then `rag eval` |
 | The API OCR provider | New adapter producing item records, called from `ingest._cloud_parse` | `ingest --force` |
 | The embedding model | `config.REPOS`, `index._ensure` (vector size), `index.encode` | Delete `qdrant/`, re-ingest everything |
@@ -623,6 +761,15 @@ Set these in `.env` unless marked as a code constant.
 .venv\Scripts\python -m rag.models
 .venv\Scripts\python -m rag.ingest
 .venv\Scripts\python -m rag.api
+.venv\Scripts\python -m rag.query
+.venv\Scripts\python -m rag.outline
+.venv\Scripts\python -m rag.meta
+.venv\Scripts\python -m rag.outline
+.venv\Scripts\python -m rag.meta
+.venv\Scripts\python -m rag.outline
+.venv\Scripts\python -m rag.meta
+.venv\Scripts\python -m rag.outline
+.venv\Scripts\python -m rag.meta
 
 # Slow: uses the models, or the APIs in API mode
 .venv\Scripts\python -m rag doctor

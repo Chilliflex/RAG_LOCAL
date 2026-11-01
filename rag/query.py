@@ -3,7 +3,7 @@ import json
 import re
 import time
 
-from rag import config, index, models, store
+from rag import config, index, meta, models, outline, store
 from rag.models import count_tokens, generate, reranker
 
 # Plain "Passage n (page N)" headers + a worked example: the 3B model copied page lists from richer headers
@@ -12,33 +12,39 @@ SYSTEM = ("Answer the question using only the passages below. Give the answer in
           "If the passages do not contain the answer, reply exactly: Not found in the documents.")
 NOT_FOUND = "Not found in the documents."
 
-LOOKUP = re.compile(r"\b(list|how many|count|which)\b.*\b(tables?|figures?|urls?|links?|websites?|references?|citations?|sections?|chapters?|pages?|formulas?|equations?)\b", re.I)
+LOOKUP = re.compile(r"\b(list|how many|count|which|what are|total|number of)\b.*\b(tables?|figures?|images?|pictures?|photos?|diagrams?|charts?|flowcharts?"
+                    r"|urls?|links?|websites?|references?|citations?|sections?|subsections?|chapters?|headings?|pages?|formulas?|equations?)\b", re.I)
+# content nouns that also name a count: only count words may route them, or "which handwritten line..." becomes a count
+COUNT = re.compile(r"\b(how many|count|total|number of)\b.*\b(words?|scanned|handwrit\w*)\b", re.I)
 WHOLE = re.compile(r"\b(summar\w*|overview|overall|main (points|ideas|findings|contributions|themes)|whole (document|paper|book)|what is (this|the) (document|paper|book|report) about|key takeaways)\b", re.I)
 SECTION = re.compile(r"\b(section|chapter)\s+([\w.]+)|\bin the (introduction|conclusion|abstract|methods?|results|discussion|related work)\b", re.I)
 MULTI = re.compile(r"\b(compare|comparison|differ\w*|versus|vs\.?|relationship between|both|how does .+ affect)\b", re.I)
 
 
 def route(q: str) -> str:
-    for name, rx in (("lookup", LOOKUP), ("whole_doc", WHOLE), ("section", SECTION), ("multi_hop", MULTI)):
+    for name, rx in (("lookup", LOOKUP), ("lookup", COUNT), ("whole_doc", WHOLE), ("section", SECTION), ("multi_hop", MULTI)):
         if rx.search(q):
             return name
     return "fact"
 
 
-def ask(q: str, doc_ids: list[str] | None = None) -> dict:
+def ask(q: str, doc_ids: list[str] | None = None, depth: str | None = None) -> dict:
     t = time.time()
     models.last_provider = config.PROVIDER
-    r = _ask(q, doc_ids)
+    depth, budget, k = config.depth_settings(depth)
+    r = _ask(q, doc_ids, budget, k)
     r["provider"] = models.last_provider  # "local" in cloud mode means Gemini failed and the local model answered
+    r["depth"] = depth
+    r.setdefault("chunks", [])  # lookup, whole-document and section answers don't come from retrieved chunks
     with open(config.DATA / "queries.jsonl", "a", encoding="utf-8") as f:  # per-question latency/quality log
-        f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "question": q, "route": r["route"], "provider": r["provider"],
+        f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "question": q, "route": r["route"], "provider": r["provider"], "depth": depth,
                             "seconds": round(time.time() - t, 1), "sources": len(r["sources"]),
                             "top_score": max((s.get("score") or 0 for s in r["sources"]), default=None),
                             "not_found": r["answer"] == NOT_FOUND}, ensure_ascii=False) + "\n")
     return r
 
 
-def _ask(q: str, doc_ids: list[str] | None) -> dict:
+def _ask(q: str, doc_ids: list[str] | None, budget: int | None = None, k: int = config.TOP_K) -> dict:
     known = store.list_ids()
     docs = [store.load(d) for d in (doc_ids or known) if d in known]
     if not docs:
@@ -51,26 +57,28 @@ def _ask(q: str, doc_ids: list[str] | None) -> dict:
     if kind == "section" and (sec := _find_section(q, docs)):
         doc, s = sec
         passages = [_section_passage(doc, s)]
-        return _answer(q, passages, kind)
+        return _answer(q, passages, kind, budget)
     queries = _decompose(q) if kind == "multi_hop" else [q]
     passages = []
     for sub in queries:
-        passages += retrieve(sub, [d["doc_id"] for d in docs])
+        passages += retrieve(sub, [d["doc_id"] for d in docs], k)
     seen, uniq = set(), []
     for p in sorted(passages, key=lambda p: -p["score"]):
         if p["uid"] not in seen:
             seen.add(p["uid"]); uniq.append(p)
-    uniq = uniq[:config.TOP_K + 2]
+    uniq = uniq[:k + 2]
     if not uniq or max(p["score"] for p in uniq) < config.RELEVANCE_MIN:
-        return {"answer": NOT_FOUND, "route": kind, "sources": []}
-    return _answer(q, _expand(uniq, docs), kind)
+        return {"answer": NOT_FOUND, "route": kind, "sources": [], "below_relevance": bool(uniq),
+                "chunks": [_chunk_view(n, p) for n, p in enumerate(uniq, 1)]}
+    uniq = [p for p in uniq if p["score"] >= config.SCORE_RATIO * uniq[0]["score"]]  # far weaker chunks only distract
+    return _answer(q, _expand(uniq, docs), kind, budget)
 
 
 def retrieve(q: str, doc_ids: list[str], k: int = config.TOP_K) -> list[dict]:
-    cands = index.search(q, doc_ids, limit=20)
+    cands = index.search(q, doc_ids, limit=max(20, 2 * k))
     if not cands:
         return []
-    scores = reranker(config.DEVICE).compute_score([[q, c["text"]] for c in cands], normalize=True)
+    scores = reranker(models.rerank_device()).compute_score([[q, c["text"]] for c in cands], normalize=True)
     for c, s in zip(cands, scores if isinstance(scores, list) else [scores]):
         c["score"] = float(s)
     return sorted(cands, key=lambda c: -c["score"])[:k]
@@ -95,13 +103,23 @@ def _expand(passages, docs):
         linked = [items[e["to"]] for e in doc.get("xrefs", [])
                   if e["from"] in p["item_ids"] and e["to"] in items and e["to"] not in p["item_ids"]][:2]
         text = before + p["text"] + after + "".join(f"\n[Linked {i['type']} p{i['page']}] {i['text']}" for i in linked)
-        out.append({**p, "text": text, "pages": sorted(set(p["pages"]) | {i["page"] for i in linked})})
+        added = [{"label": "Text before", "text": before.strip()}] * bool(before) + [{"label": "Text after", "text": after.strip()}] * bool(after) \
+            + [{"label": f"Linked {i['type']}, p. {i['page']}", "text": i["text"]} for i in linked]
+        out.append({**p, "text": text, "pages": sorted(set(p["pages"]) | {i["page"] for i in linked}),
+                    "chunk_text": p["text"], "chunk_pages": p["pages"], "added": added})
     return out
 
 
+def _chunk_view(rank, p) -> dict:
+    """One retrieved chunk for the UI: its own text and pages, what expansion added, and whether the model saw it."""
+    return {"rank": rank, "score": p.get("score"), "pages": p.get("chunk_pages", p["pages"]), "section": p.get("section"), "type": p["type"],
+            "text": p.get("chunk_text", p["text"]), "added": p.get("added", []), "sent": p.get("sent", False), "truncated": p.get("truncated", False)}
+
+
 def _context(passages, budget_tokens=None) -> str:
-    """Local: 2500 context + instructions + 512 answer stays inside LLM_CTX 8192. Cloud: 12000."""
-    budget_tokens = budget_tokens or config.CONTEXT_TOKENS
+    """Passages up to the depth's budget, never past what the window leaves after the answer and instructions."""
+    cap = models.context_window() - config.ANSWER_TOKENS - 600
+    budget_tokens = min(budget_tokens or cap, cap)
     parts, used = [], 0
     for n, p in enumerate(passages, 1):
         block = f"Passage {n} (page {', '.join(map(str, p['pages']))}):\n{p['text']}"
@@ -111,13 +129,16 @@ def _context(passages, budget_tokens=None) -> str:
                 break
             block = block[: int(len(block) * budget_tokens / cost)]  # first passage alone is too big: cut it
             cost = budget_tokens
+            p["truncated"] = True
         parts.append(block); used += cost
+        p["sent"] = True
     return "\n\n".join(parts)
 
 
-def _answer(q, passages, kind):
-    ans = _cite(generate(SYSTEM, f"{_context(passages)}\n\nQuestion: {q}"), passages)
+def _answer(q, passages, kind, budget=None):
+    ans = _cite(generate(SYSTEM, f"{_context(passages, budget)}\n\nQuestion: {q}", max_new_tokens=config.ANSWER_TOKENS), passages)
     return {"answer": ans, "route": kind,
+            "chunks": [_chunk_view(n, p) for n, p in enumerate(passages, 1)] if kind != "section" else [],
             "sources": [{"doc_id": p["doc_id"], "pages": p["pages"], "section": p["section"], "score": p.get("score"),
                          "type": p["type"], "text": p["text"][:300]} for p in passages]}
 
@@ -154,9 +175,14 @@ def _lookup(q, docs):
         elif re.search(r"references?|citations?", ql):
             lines.append(f"{d['title']}: {len(d['references'])} references")
             lines += [f"  - {r['text'][:150]}" for r in d["references"]]
-        elif re.search(r"sections?|chapters?", ql):
-            lines.append(f"{d['title']}: {len(d['sections'])} sections")
-            lines += [f"  {'  ' * (s['level'] - 1)}- {s['title']} (p{s['pages'][0]})" for s in d["sections"]]
+        elif re.search(r"sections?|chapters?|headings?", ql):
+            secs = [s for s in d["sections"] if s["level"] > 0]
+            lines.append(f"{d['title']}: {outline.describe(d['outline']) if d.get('outline') else f'{len(secs)} sections'}")
+            lines += [f"  {'  ' * (s['level'] - 1)}- {s['title']} (p{s['pages'][0]}-{s['pages'][1]})" for s in secs]
+        elif (m := re.search(r"\b(image|picture|photo|diagram|chart|flowchart|scanned|handwrit|word)", ql)):
+            noun = {"handwrit": "handwritten"}.get(m.group(1), m.group(1))
+            if (c := meta.count(d, noun)):
+                lines.append(f"{d['title']}: {c}")
         elif re.search(r"pages?", ql):
             lines.append(f"{d['title']}: {d['pages']} pages")
     return "\n".join(lines) or None
@@ -213,3 +239,37 @@ def _whole_doc(q, docs):
         srcs.append({"doc_id": d["doc_id"], "pages": [1, d["pages"]], "section": "whole document", "type": "summary"})
     ans = generate(SYSTEM, "\n\n".join(f"Passage {n}:\n{t}" for n, t in enumerate(notes, 1)) + f"\n\nQuestion: {q}")
     return {"answer": ans, "route": "whole_doc", "sources": srcs}
+
+
+if __name__ == "__main__":  # self-check of the chunk view, with fake retrieval and LLM: no models needed
+    from unittest import mock
+
+    item = lambda i, t: {"id": i, "type": "text", "page": 1, "section_id": "s", "text": t}
+    doc = {"doc_id": "d", "title": "T", "sections": [], "xrefs": [{"from": "b", "to": "t"}],
+           "items": [item("a", "before text"), item("b", "core"), item("c", "after text"), {**item("t", "| x |"), "type": "table", "page": 3, "section_id": "z"}]}
+    hit = lambda u, score, text: {"uid": u, "doc_id": "d", "pages": [1], "item_ids": ["b"], "type": "text", "section_id": "s", "section": "S", "text": text, "score": score}
+    patches = {"count_tokens": lambda t: len(t.split()), "generate": lambda s, u, **k: "It is core (p. 1).", "retrieve": None}
+    with mock.patch.dict(globals(), patches), mock.patch("rag.store.list_ids", return_value=["d"]), mock.patch("rag.store.load", return_value=doc), \
+            mock.patch("rag.models.context_window", return_value=8192):
+        globals()["retrieve"] = lambda q, ids, k: [hit("1", 0.9, "core"), hit("2", 0.5, "word " * 3000), hit("3", 0.05, "noise")]
+        r = _ask("What is it?", None, 2500, 6)
+        first, second = r["chunks"]  # the 0.05 chunk is below SCORE_RATIO x 0.9 and is not sent at all
+        assert first["rank"] == 1 and first["score"] == 0.9 and first["text"] == "core" and first["pages"] == [1] and first["sent"] and not first["truncated"], first
+        assert [a["label"] for a in first["added"]] == ["Text before", "Text after", "Linked table, p. 3"], first["added"]
+        assert not second["sent"] and r["sources"][0]["pages"] == [1, 3]  # over the budget; sources still include the linked page
+        globals()["retrieve"] = lambda q, ids, k: [hit("1", 0.5, "word " * 7000)]
+        only = _ask("What is it?", None, None, 6)["chunks"][0]
+        assert only["sent"] and only["truncated"], only  # budget None = the window: 8192 - answer - 600; the passage is cut to fit
+        globals()["retrieve"] = lambda q, ids, k: [hit("1", 0.001, "weak")]
+        low = _ask("What is it?", None, 2500, 6)
+        assert low["answer"] == NOT_FOUND and low["below_relevance"] and low["chunks"][0]["text"] == "weak" and not low["chunks"][0]["sent"], low
+        globals()["retrieve"] = lambda q, ids, k: []
+        assert _ask("What is it?", None, 2500, 6)["chunks"] == []
+    for q in ("how many total sections are there in this pdf from 1st to last page like sections and subsections", "how many sections and subsections are there?",
+              "what is the total number of sections?", "total sections in this pdf?", "how many subsections are there?", "what are the sections of this document?",
+              "how many images are there?", "how many diagrams does it have?", "how many scanned pages?"):
+        assert route(q) == "lookup", q
+    assert route("What was the nitrate level at station C?") == "fact" and route("Which station had the highest turbidity?") == "fact"
+    assert route("Which name appears in the handwritten line about victimising someone?") == "fact" and route("how many handwritten passages?") == "lookup"
+    assert route("What did the handwritten note say about her wrists?") == "fact" and route("count the words") == "lookup"
+    print("ok")

@@ -61,7 +61,7 @@ def delete_doc(doc_id: str):
         client().delete(COLLECTION, qm.Filter(must=[qm.FieldCondition(key="doc_id", match=qm.MatchValue(value=doc_id))]))
 
 
-def search(query: str, doc_ids: list[str] | None = None, limit: int = 30, device: str = "cpu") -> list[dict]:
+def search(query: str, doc_ids: list[str] | None = None, limit: int = 20, device: str = "cpu") -> list[dict]:
     """Dense + sparse prefetch fused with reciprocal rank fusion."""
     if not client().collection_exists(COLLECTION):
         return []

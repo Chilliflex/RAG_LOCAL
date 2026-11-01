@@ -49,6 +49,12 @@ def run() -> dict:
         local.append(_check("llama-cpp-python installed", True))
     except ImportError as e:
         local.append(_check("llama-cpp-python installed", False, str(e)))
+    from rag import models
+    free_gb, kind = models.free_memory_gb()
+    ctx = models.fit_context()
+    local.append(_check("LLM window from free memory", True,
+                        f"{ctx:,} tokens ({free_gb:.1f} GB {kind} free now, {config.VRAM_RESERVE_GB} GB kept free); reranker on the {models.rerank_device().upper()}"
+                        + ("; fixed by LLM_CTX in .env" if config.LLM_CTX else "; for more, close other GPU apps or set VRAM_RESERVE_GB=0.5 or LLM_CTX in .env" if ctx <= 4096 else "")))
     from rag import cloud
     api = [_check("Internet connection", cloud.online(), "https reaches api.mistral.ai"),
            _check(f"{APIS[0]['name']} ({APIS[0]['url']})", *cloud.check_mistral()),
@@ -79,7 +85,7 @@ if __name__ == "__main__":  # self-check: fake keys and network; the key value n
         with mock.patch("httpx.get", return_value=httpx.Response(200)), mock.patch("httpx.post", return_value=httpx.Response(403)):
             r = run()
     text = json.dumps(r) + render(r)
-    assert "sk-test" not in text and len(r["local"]) == 11 and len(r["api"]) == 7
+    assert "sk-test" not in text and len(r["local"]) == 12 and len(r["api"]) == 7
     by = {c["name"].split(" (")[0]: c for c in r["api"]}
     assert by["Mistral API key"]["ok"] and not by["Google AI Studio key"]["ok"] and by["Internet connection"]["ok"]
     print("ok")

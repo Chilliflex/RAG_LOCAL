@@ -61,6 +61,9 @@
   button:disabled { opacity: .5; cursor: default; transform: none; }
   button.link, button.ghost { background: transparent; color: var(--accent); font-weight: 600; padding: 6px 10px; border: 1px solid transparent; }
   button.ghost { border-color: var(--line-strong); color: var(--fg); } button.ghost:hover, button.link:hover { background: var(--accent-soft); }
+  select { font: inherit; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: inherit; }
+  .meta { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: .9em; margin: 8px 0; } .meta dt { color: var(--muted); } .meta dd { margin: 0; }
+  .tree { list-style: none; padding-left: 0; margin: 6px 0; font-size: .9em; } .tree li { margin: 1px 0; } .tree .bm { color: var(--muted); font-size: .8em; }
   textarea, input[type=password], input[type=file] { width: 100%; font: inherit; padding: 9px 11px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: inherit; }
   textarea:focus, input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
   label { font-weight: 600; font-size: .9rem; display: block; margin: 10px 0 6px; }
@@ -88,6 +91,12 @@
   #answer:empty { display: none; }
   #sources { list-style: none; padding: 0; margin: 10px 0 0; } #sources li { border-top: 1px solid var(--line); padding: 6px 0; }
   details summary { cursor: pointer; font-weight: 500; } details p { margin: 6px 0 0 14px; }
+  #chunks { margin-top: 16px; } #chunks h3 { margin-bottom: 4px; }
+  .chunk { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; margin-top: 10px; }
+  .chunk-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: .9em; }
+  .chunk-head b { font-size: 1rem; } .chunk-head .badge { background: var(--surface-2); color: var(--fg-2); }
+  .chunk-head .badge.ok { background: var(--ok-soft); color: var(--ok); } .chunk-head .badge.warn { background: var(--warn-soft); color: var(--warn); }
+  .chunk-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; background: var(--surface-2); border-radius: 6px; padding: 8px 10px; margin: 8px 0 0; font-size: .9em; }
   .hint { color: var(--muted); font-size: .85rem; margin-top: 6px; }
   .sr { position: absolute; left: -9999px; }
 </style>
@@ -119,6 +128,7 @@
         <tr><td>Speed, 100 pages</td><td>about 30 min to ingest, 10–140 s per answer (GTX 1650)</td></tr>
         <tr><td>Privacy</td><td>nothing leaves this computer</td></tr>
         <tr><td>Hardware</td><td>NVIDIA GPU with 4 GB VRAM recommended, 16 GB RAM, 20 GB free disk</td></tr>
+        <tr><td>Per answer</td><td>window sized from free memory, keeping 0.75 GB free (8k tokens on a 4 GB GPU, with the reranker moved to the CPU; 16k with 4.5 GB free); Fast 2,500 / Balanced 6,000 / Maximum: the whole window; answers up to 1,024 tokens</td></tr>
       </table>
     </button>
     <button class="card" data-p="cloud" aria-pressed="false">
@@ -128,6 +138,7 @@
         <tr><td>Speed, 100 pages</td><td>about 3 min to ingest, 2–5 s per answer</td></tr>
         <tr><td>Privacy</td><td>page images go to Mistral; passages, questions and figures go to Google</td></tr>
         <tr><td>Hardware</td><td>any laptop with 8 GB RAM, 5 GB free disk and internet</td></tr>
+        <tr><td>Per answer</td><td>Standard 12,000 / Thorough 30,000 / Maximum 100,000 tokens of passages (about $0.004 / $0.009 / $0.03 at list price); answers up to 2,048 tokens</td></tr>
       </table>
     </button>
   </div>
@@ -153,9 +164,13 @@
   <h2 id="ask-h"><span class="step">3</span>Ask</h2>
   <label for="q">Question</label>
   <textarea id="q" rows="3" placeholder="e.g. What was the nitrate level at station C?"></textarea>
-  <div class="row"><button id="ask">Ask</button><span class="hint">Answers cite pages as (p. N). Ctrl+Enter sends.</span></div>
+  <div class="row"><button id="ask">Ask</button>
+    <label for="depth" style="margin:0">Depth</label><select id="depth"></select>
+    <span id="depthHint" class="hint"></span></div>
+  <p class="hint">Answers cite pages as (p. N). Ctrl+Enter sends.</p>
   <div role="status" aria-live="polite">
     <p id="answer"></p>
+    <div id="chunks"></div>
     <ul id="sources"></ul>
   </div>
 </section>
@@ -181,12 +196,45 @@ applyTheme(saved);
 document.querySelectorAll(".seg button").forEach(b => b.onclick = () => applyTheme(b.dataset.theme));
 
 /* ---- mode ---- */
+const DEPTH_HINT = {local: {fast: "about 2,500 tokens of passages, quickest", balanced: "about 6,000 tokens, roughly 2-4x slower", maximum: "fills the whole window, slowest"},
+                    cloud: {standard: "12,000 tokens, about $0.004 per question", thorough: "30,000 tokens, about $0.009", maximum: "100,000 tokens, about $0.03"}};
+
 async function loadMode() {
   mode = await (await fetch("/mode")).json();
   $("modeName").textContent = NAMES[mode.provider];
   $("modeTag").hidden = false; $("modeBtn").hidden = false;
   $("modes").hidden = mode.chosen; $("main").hidden = !mode.chosen;
+  const depths = mode.depths[mode.provider];
+  $("depth").innerHTML = Object.keys(depths).map(d => `<option value="${d}"${d === mode.depth ? " selected" : ""}>${d[0].toUpperCase() + d.slice(1)}</option>`).join("");
+  const want = depths[mode.depth].budget, got = mode.budgets[mode.depth];
+  $("depthHint").textContent = (DEPTH_HINT[mode.provider][mode.depth] || "") +
+    (mode.window && (want == null || got < want) ? ` — on this machine ${got.toLocaleString()} tokens of passages fit the ${mode.window.toLocaleString()}-token window` : "");
   if (mode.chosen) loadDocs();
+}
+$("depth").onchange = async () => {
+  const r = await fetch("/mode", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({provider: mode.provider, depth: $("depth").value})});
+  if (r.ok) loadMode(); else $("depthHint").textContent = (await r.json()).detail;
+};
+
+async function showDetails(id, el) {
+  if (el.dataset.loaded) return;
+  el.dataset.loaded = "1";
+  const d = await (await fetch(`/doc/${id}`)).json();
+  const m = d.meta;
+  const row = (k, v) => v == null || v === "" ? "" : `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`;
+  let html = m ? `<dl class="meta">
+    ${row("File", `${m.file.name}, ${(m.file.bytes / 1048576).toFixed(1)} MB${m.file.encrypted ? ", encrypted" : ""}`)}
+    ${row("Author", m.file.author)}${row("Created", m.file.created)}${row("Producer", m.file.producer)}
+    ${row("Pages", `${m.pages.total}: ${m.pages.digital} digital, ${m.pages.scanned} scanned, ${m.pages.mixed} mixed`)}
+    ${row("Text", `${m.content.printed_items} printed, ${m.content.ocr_items} OCR and ${m.content.handwritten_items} handwritten passages; ${m.content.margin_notes} margin notes; about ${m.content.words.toLocaleString()} words`)}
+    ${row("Visuals", `${m.visuals.figures} figures (${Object.entries(m.visuals.figure_types).map(([k, n]) => `${k} ${n}`).join(", ") || "none"}), ${m.visuals.tables} tables, ${m.visuals.formulas} formulas, ${m.visuals.embedded_images} embedded images`)}
+    ${row("Structure", m.structure.summary)}
+    ${row("Links", `${m.links.urls} URLs, ${m.links.references} references (${m.links.references_with_doi} with DOI, ${m.links.references_with_arxiv} arXiv), ${m.links.cross_references} cross-references`)}
+    ${row("Quality", `${m.quality.avg_ocr_confidence == null ? "no OCR" : "average OCR confidence " + m.quality.avg_ocr_confidence}, ${m.quality.low_confidence_items} low-confidence passages, audit ${m.quality.audit_complete ? "complete" : "found gaps"}`)}
+    ${row("Processing", `${m.processing.mode} mode (${m.processing.parsed_with.join(", ")}), ${m.processing.seconds} s${m.processing.api_cost_usd != null ? ", API cost $" + m.processing.api_cost_usd : ""}`)}
+  </dl>` : '<p class="muted">No details yet: this document was ingested before details existed. Re-run ingest --rebuild on it.</p>';
+  html += `<ul class="tree">${d.sections.map(s => `<li style="padding-left:${(s.level - 1) * 16}px">${esc(s.title)} <span class="bm">p${s.pages[0]}${s.pages[1] !== s.pages[0] ? "-" + s.pages[1] : ""}${s.bookmarked === false && d.outline && d.outline.source === "bookmarks" ? ", not bookmarked" : ""}</span></li>`).join("")}</ul>`;
+  el.querySelector(".details").innerHTML = html;
 }
 $("modeBtn").onclick = () => { $("modes").hidden = false; $("main").hidden = true; $("req").innerHTML = ""; $("modes").scrollIntoView({behavior: "smooth"}); };
 
@@ -230,8 +278,10 @@ async function loadDocs() {
   const docs = await (await fetch("/docs")).json();
   $("docs").innerHTML = docs.map(d => `<li><label><input type="checkbox" value="${d.doc_id}">
     <span>${esc(d.title)} <span class="muted">(${esc(d.file)}, ${d.pages} pages)</span>
-    ${d.complete === false ? '<span class="badge bad">audit found gaps</span>' : d.complete ? '<span class="badge ok">audit complete</span>' : ""}</span></label></li>`).join("")
+    ${d.complete === false ? '<span class="badge bad">audit found gaps</span>' : d.complete ? '<span class="badge ok">audit complete</span>' : ""}</span></label>
+    <details data-id="${d.doc_id}"><summary class="muted">Details</summary><div class="details"><p class="muted">Loading…</p></div></details></li>`).join("")
     || '<li class="muted">No documents yet in this mode.</li>';
+  document.querySelectorAll("#docs details").forEach(el => el.addEventListener("toggle", () => el.open && showDetails(el.dataset.id, el)));
 }
 
 async function poll(id) {
@@ -266,19 +316,45 @@ $("upload").onclick = async () => {
   poll(j.doc_id);
 };
 
+const NO_CHUNKS = {lookup: "Answered directly from the document's stored structure, so no chunks were searched.",
+  whole_doc: "Answered from section summaries, not retrieved chunks.", section: "Answered from the requested section's text, not retrieved chunks."};
+
+function renderChunks(j) {
+  if (!j.chunks.length) {
+    $("chunks").innerHTML = `<h3>Retrieved chunks</h3><p class="muted">${esc(NO_CHUNKS[j.route] || "No matching chunks were found.")}</p>`;
+    return;
+  }
+  const sent = j.chunks.filter(c => c.sent).length;
+  $("chunks").innerHTML = `<h3>Retrieved chunks (${j.chunks.length})</h3>
+    <p class="muted">${j.below_relevance ? "The top score was below the relevance limit, so the model was not called." : `${sent} of ${j.chunks.length} were sent to the model.`}</p>` +
+    j.chunks.map(c => `<article class="chunk">
+      <div class="chunk-head"><b>#${c.rank}</b>
+        <span>score ${c.score == null ? "n/a" : c.score.toFixed(3)}</span>
+        <span>${c.pages.length > 1 ? "pages" : "page"} ${c.pages.join(", ")}</span>
+        <span class="badge">${esc(c.type)}</span>
+        ${c.sent ? `<span class="badge ok">${c.truncated ? "Sent, cut to fit" : "Sent"}</span>` : `<span class="badge warn">${j.below_relevance ? "Below relevance limit" : "Not sent: over the token limit"}</span>`}
+      </div>
+      <div class="muted">${esc(c.section || "No section")}</div>
+      <div class="chunk-text" tabindex="0">${esc(c.text)}</div>
+      ${c.added.length ? `<details><summary>Added context (${c.added.length})</summary>${c.added.map(a => `<p class="muted"><b>${esc(a.label)}:</b> ${esc(a.text)}</p>`).join("")}</details>` : ""}
+    </article>`).join("");
+}
+
 $("ask").onclick = async () => {
   const q = $("q").value.trim();
   if (!q) return;
-  $("ask").disabled = true; $("sources").innerHTML = "";
+  $("ask").disabled = true; $("sources").innerHTML = ""; $("chunks").innerHTML = "";
   $("answer").textContent = mode.provider === "cloud" ? "Thinking…" : "Thinking… (local model, may take a minute)";
   const ids =[...document.querySelectorAll("#docs input:checked")].map(i => i.value);
   try {
-    const r = await fetch("/ask", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({question: q, doc_ids: ids})});
+    const r = await fetch("/ask", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({question: q, doc_ids: ids, depth: $("depth").value})});
     const j = await r.json();
     if (!r.ok) { $("answer").innerHTML = `<span class="bad">${esc(j.detail)}</span>`; return; }
     $("answer").textContent = j.answer + (j.provider !== mode.provider ? "\n\n(The API was unavailable; this answer came from the local model.)" : "");
-    $("sources").innerHTML = j.sources.map((s, n) => `<li><details><summary>[${n + 1}] pages ${s.pages.join(", ")} — ${esc(s.section || s.type)}</summary>
-      <p class="muted">${esc(s.text)}</p></details></li>`).join("");
+    renderChunks(j);
+    // the chunk cards already show the same passages in full
+    $("sources").innerHTML = j.chunks.length ? "" : j.sources.map((s, n) => `<li><details><summary>[${n + 1}] pages ${s.pages.join(", ")} — ${esc(s.section || s.type)}</summary>
+      ${s.text ? `<p class="muted">${esc(s.text)}</p>` : ""}</details></li>`).join("");
   } finally { $("ask").disabled = false; }
 };
 $("q").addEventListener("keydown", e => { if (e.key === "Enter" && e.ctrlKey) $("ask").click(); });

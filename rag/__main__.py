@@ -12,6 +12,7 @@ def main():
     p = sub.add_parser("ingest"); p.add_argument("pdfs", nargs="+", type=Path); p.add_argument("--force", action="store_true", help="re-parse from scratch")
     p.add_argument("--rebuild", action="store_true", help="keep parsed pages and summaries, redo stitching/index")
     p = sub.add_parser("ask"); p.add_argument("question"); p.add_argument("--doc", action="append")
+    p.add_argument("--depth", help="local: fast | balanced | maximum; cloud: standard | thorough | maximum")
     sub.add_parser("docs")
     p = sub.add_parser("eval"); p.add_argument("golden", nargs="?", type=Path, default=config.ROOT / "samples/golden.json")
     p.add_argument("--retrieval-only", action="store_true")
@@ -34,8 +35,8 @@ def _run(a):
             print(json.dumps({k: r[k] for k in ("doc_id", "pages", "sections", "chunks", "counts", "notes", "gaps", "complete") if k in r}, indent=1))
     elif a.cmd == "ask":
         from rag.query import ask
-        r = ask(a.question, a.doc)
-        print(f"[{r['route']}{', answered by the local model' if r['provider'] != config.PROVIDER else ''}]\n{r['answer']}\n")
+        r = ask(a.question, a.doc, a.depth)
+        print(f"[{r['route']}, depth {r['depth']}{', answered by the local model' if r['provider'] != config.PROVIDER else ''}]\n{r['answer']}\n")
         for s in r["sources"]:
             print(f"  - {s['doc_id']} p{','.join(map(str, s['pages']))} {s['section']} ({s['type']}, score {s.get('score') or 0:.2f})")
     elif a.cmd == "docs":

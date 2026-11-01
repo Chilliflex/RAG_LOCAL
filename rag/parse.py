@@ -60,6 +60,17 @@ def _ocr_cells(cells, bbox, height):
     return out
 
 
+def _font(spans, bbox) -> dict | None:
+    """Dominant font size and bold share of the text-layer spans inside bbox; None on scanned pages (no spans)."""
+    r = pymupdf.Rect(bbox)
+    hit = [s for s in spans if s["text"].strip() and pymupdf.Rect(s["bbox"]).intersects(r)]
+    if not hit:
+        return None
+    n = sum(len(s["text"]) for s in hit)
+    bold = sum(len(s["text"]) for s in hit if s["flags"] & 16 or "bold" in s["font"].lower()) / n
+    return {"size": round(max(hit, key=lambda s: len(s["text"]))["size"], 1), "bold": round(bold, 2)}
+
+
 def _items(conv, pdf: Path) -> dict[int, list[dict]]:
     from docling_core.types.doc import PictureItem, TableItem
     doc = conv.document
@@ -67,6 +78,7 @@ def _items(conv, pdf: Path) -> dict[int, list[dict]]:
     cells = {p.page_no: (p.parsed_page.textline_cells if p.parsed_page else []) for p in conv.pages}
     out: dict[int, list[dict]] = {}
     pdfdoc = pymupdf.open(pdf)
+    spans: dict[int, list] = {}  # text-layer spans per page, read once, for heading detection by font
     captions = set()
     for item, _ in doc.iterate_items():
         if isinstance(item, (TableItem, PictureItem)):
@@ -98,6 +110,11 @@ def _items(conv, pdf: Path) -> dict[int, list[dict]]:
                 rec["text"] = " ".join(pdfdoc[page - 1].get_textbox(pymupdf.Rect(bbox)).split())
             if kind == "heading":
                 rec["level"] = getattr(item, "level", 1)
+            if kind in ("text", "heading", "list"):
+                if page not in spans:
+                    spans[page] = [s for b in pdfdoc[page - 1].get_text("dict")["blocks"] for l in b.get("lines", []) for s in l["spans"]]
+                if (font := _font(spans[page], bbox)):
+                    rec["font"] = font
         ocr = _ocr_cells(cells.get(page, []), bbox, heights[page])
         rec["confidence"] = round(sum(c["conf"] for c in ocr) / len(ocr), 3) if ocr else None
         if ocr and kind not in ("figure", "table"):

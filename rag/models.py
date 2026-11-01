@@ -31,13 +31,54 @@ def reranker(device: str = config.DEVICE):
     return FlagReranker(config.RERANK_MODEL, use_fp16=device == "cuda", devices=device)
 
 
+def free_memory_gb() -> tuple[float, str]:
+    """Free VRAM when the LLM runs on the GPU, else available RAM; measured now, so other apps' use counts."""
+    if config.DEVICE == "cuda" and torch.cuda.is_available():
+        return torch.cuda.mem_get_info()[0] / 2**30, "VRAM"
+    import psutil
+    return psutil.virtual_memory().available / 2**30, "RAM"
+
+
+def _window(free: float, with_reranker: bool) -> int:
+    spare = free - config.VRAM_RESERVE_GB - config.LLM_VRAM_BASE_GB - (config.RERANKER_VRAM_GB if with_reranker else 0)
+    return max(4096, min(config.LLM_CTX_MAX, int(spare / config.LLM_VRAM_PER_1K_GB) * 1024))
+
+
+@cache
+def rerank_device() -> str:
+    """GPU when the reranker and an LLM window of at least 8k fit beside each other within the reserve; otherwise the CPU."""
+    if config.RERANK_DEVICE != "auto":
+        return config.RERANK_DEVICE
+    if config.DEVICE != "cuda" or not torch.cuda.is_available():
+        return config.DEVICE
+    return "cuda" if _window(free_memory_gb()[0], True) >= 8192 else "cpu"
+
+
+def fit_context() -> int:
+    """Largest LLM window that keeps VRAM_RESERVE_GB free, from the measured memory cost of the model; LLM_CTX in .env overrides.
+    Room is left for the reranker only when it shares the GPU and is not loaded yet (once loaded, its memory is already gone from free)."""
+    if config.LLM_CTX:
+        return config.LLM_CTX
+    return _window(free_memory_gb()[0], rerank_device() == "cuda" and not reranker.cache_info().currsize)
+
+
+def budgets() -> dict:
+    """Effective passage budget per depth on this machine: the configured one, capped by the window (cloud: as configured)."""
+    cap = (1_000_000 if config.PROVIDER == "cloud" else fit_context()) - config.ANSWER_TOKENS - 600
+    return {name: min(budget or cap, cap) for name, (budget, _) in config.DEPTHS[config.PROVIDER].items()}
+
+
 @cache
 def llm():
     os.add_dll_directory(os.path.join(os.path.dirname(torch.__file__), "lib"))  # llama.cpp uses torch's CUDA DLLs
     from llama_cpp import Llama
-    m = Llama(config.LLM_MODEL, n_ctx=config.LLM_CTX, n_gpu_layers=-1 if config.DEVICE == "cuda" else 0, verbose=False)
+    m = Llama(config.LLM_MODEL, n_ctx=fit_context(), n_gpu_layers=-1 if config.DEVICE == "cuda" else 0, verbose=False)
     atexit.register(m.close)  # avoid noisy teardown errors
     return m
+
+
+def context_window() -> int:
+    return 1_000_000 if config.PROVIDER == "cloud" else llm().n_ctx()
 
 
 last_provider = config.PROVIDER  # set to "local" when a cloud call failed and the local model answered instead (query.ask resets it)
@@ -104,4 +145,15 @@ if __name__ == "__main__":  # self-check: Gemini down -> local answer, marked; G
             generate("s", "u"); raise AssertionError
         except ValueError as e:
             assert "HTTP 401" in str(e) and "download_models" in str(e), e
+    # 3.2 GB free (a 4 GB GTX 1650 driving the display): both models would leave only a 4k window, so the reranker goes to the CPU
+    # and the LLM gets 8k; 4.5 GB free: both on the GPU with 16k; plenty: the trained maximum
+    config.LLM_CTX, config.RERANK_DEVICE, config.DEVICE = 0, "auto", "cuda"
+    for free, device, expected in ((3.2, "cpu", 8192), (4.5, "cuda", 16384), (1.0, "cpu", 4096), (40.0, "cuda", 32768)):
+        rerank_device.cache_clear()
+        with mock.patch.dict(globals(), {"free_memory_gb": lambda: (free, "VRAM")}), mock.patch("torch.cuda.is_available", return_value=True):
+            assert (rerank_device(), fit_context()) == (device, expected), (free, rerank_device(), fit_context())
+    rerank_device.cache_clear()
+    with mock.patch.dict(globals(), {"fit_context": lambda: 4096}):
+        config.PROVIDER = "local"; config.ANSWER_TOKENS = 1024
+        assert budgets() == {"fast": 2472, "balanced": 2472, "maximum": 2472}, budgets()  # every depth capped by a 4k window
     print("ok")

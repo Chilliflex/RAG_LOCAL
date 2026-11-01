@@ -2,7 +2,7 @@
 import re
 
 from rag import config
-from rag.stitch import norm_title
+from rag.outline import norm_title
 from rag.store import write_json
 
 
@@ -34,6 +34,8 @@ def run(doc: dict, triage: list[dict], toc: list) -> dict:
     low = [{"page": i["page"], "type": i["type"], "confidence": round(i["confidence"], 2), "text": i["text"][:80]}
            for i in doc["items"] if i.get("confidence") is not None and i["confidence"] < config.OCR_CONFIDENCE_MIN]
     notes = []
+    if (o := doc.get("outline")) and o["source"] == "headings":
+        notes.append("No PDF bookmarks or contents page: the section tree comes from detected headings, so section counts are approximate")
     if cloud := [i for i in doc["items"] if i.get("source") == "mistral"]:
         notes.append(f"{len(cloud)} items read by Mistral OCR: margin notes are not detected and OCR confidence is not reported in API mode")
         blank = [i["page"] for i in cloud if i["type"] == "figure" and not i.get("description")]

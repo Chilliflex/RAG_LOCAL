@@ -1,15 +1,11 @@
 """Per-page items -> one Document: drop headers/footers, attach margin notes, merge cross-page
-paragraphs/tables, build the section tree (PDF bookmarks > heading numbering > layout level)."""
+paragraphs/tables, then the section tree (rag.outline: bookmarks > contents page > headings)."""
 import re
+
+from rag import outline
 
 BODY = {"text", "list"}
 END = re.compile(r"[.!?:;\"”’)\]]\s*$")
-NUMBERED = re.compile(r"^\s*((?:\d+|[A-Z])(?:\.\d+)*)\.?\s+\S")
-
-
-def norm_title(t: str) -> str:
-    """'3.2 Attention' and 'Attention' compare equal."""
-    return re.sub(r"[^a-z0-9]", "", re.sub(r"^\s*(?:\d+|[A-Z])(?:\.\d+)*\.?\s+", "", t).lower())
 
 
 def _margin_notes(items: list[dict], page_width: float) -> list[dict]:
@@ -91,14 +87,6 @@ def _is_page_end(it, items):
     return bool(last) and it is last[-1]
 
 
-def _level(item, toc_levels):
-    if (lv := toc_levels.get(norm_title(item["text"]))):
-        return lv
-    if (m := NUMBERED.match(item["text"])):
-        return m.group(1).count(".") + 1
-    return item.get("level") or 1
-
-
 def build(doc_id: str, title: str, pages: int, items: list[dict], page_widths: dict, toc: list) -> dict:
     items = [i for i in items if i["type"] not in ("page_header", "page_footer")]
     for i in items:
@@ -111,25 +99,8 @@ def build(doc_id: str, title: str, pages: int, items: list[dict], page_widths: d
     items = [x for p in sorted(by_page) for x in _margin_notes(by_page[p], page_widths.get(p, 612))]
     items = _attach_captions(items)
     items = _merge_cross_page(items)
-
-    toc_levels = {norm_title(t[1]): t[0] for t in toc}
-    root = {"id": "s0", "title": title, "level": 0, "path": [title], "ancestors": [], "pages": [1, pages]}
-    sections, stack, cur = [root], [root], root
-    for it in items:
-        if it["type"] == "heading":
-            lv = _level(it, toc_levels)
-            while len(stack) > 1 and stack[-1]["level"] >= lv:
-                stack.pop()
-            cur = {"id": f"s{len(sections)}", "title": it["text"].strip(), "level": lv, "parent": stack[-1]["id"],
-                   "ancestors": [s["id"] for s in stack], "path": [s["title"] for s in stack[1:]] + [it["text"].strip()],
-                   "pages": [it["page"], it["page"]]}
-            sections.append(cur); stack.append(cur)
-        it["section_id"] = cur["id"]
-        for s in stack:
-            s["pages"][1] = max(s["pages"][1], it["page_end"])
-    if len(sections) > 1 and not any(i["section_id"] == "s0" for i in items):
-        sections = sections[1:]  # no front matter: drop the empty root
-    return {"doc_id": doc_id, "title": title, "pages": pages, "items": items, "sections": sections}
+    items, sections, summary = outline.build(items, toc, title, pages)
+    return {"doc_id": doc_id, "title": title, "pages": pages, "items": items, "sections": sections, "outline": summary}
 
 
 if __name__ == "__main__":  # self-check

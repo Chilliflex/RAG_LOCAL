@@ -85,6 +85,7 @@ def doctor():
 
 class Mode(BaseModel):
     provider: str
+    depth: str | None = None
     mistral_api_key: str = ""
     google_api_key: str = ""
 
@@ -92,23 +93,39 @@ class Mode(BaseModel):
 @app.get("/mode")
 def get_mode():
     """Never returns key values, only whether one is stored."""
+    from rag import models
+    depth, _, _ = config.depth_settings()
     return {"provider": config.PROVIDER, "chosen": "provider" in config.load_settings(),
             "env_override": "PROVIDER" in os.environ,  # .env wins at the next start
-            "keys": {"mistral": bool(config.MISTRAL_API_KEY), "google": bool(config.GOOGLE_API_KEY)}}
+            "keys": {"mistral": bool(config.MISTRAL_API_KEY), "google": bool(config.GOOGLE_API_KEY)},
+            "depth": depth, "depths": {p: {n: {"budget": b, "k": k} for n, (b, k) in t.items()} for p, t in config.DEPTHS.items()},
+            "budgets": models.budgets(), "window": None if config.PROVIDER == "cloud" else models.fit_context(),
+            "answer_tokens": config.ANSWER_TOKENS}
 
 
 @app.post("/mode")
 def set_mode(m: Mode):
     if m.provider not in ("local", "cloud"):
         raise HTTPException(400, "provider must be 'local' or 'cloud'")
+    if m.depth and m.depth not in config.DEPTHS[m.provider]:
+        raise HTTPException(400, f"depth must be one of {list(config.DEPTHS[m.provider])}")
     if not GPU.acquire(timeout=2):
         raise HTTPException(409, "Busy ingesting a document; switch mode when it finishes.")
     try:
-        config.set_mode(m.provider, mistral_api_key=m.mistral_api_key.strip(), google_api_key=m.google_api_key.strip())
+        config.set_mode(m.provider, m.depth, mistral_api_key=m.mistral_api_key.strip(), google_api_key=m.google_api_key.strip())
         index.reset()
     finally:
         GPU.release()
     return get_mode()
+
+
+@app.get("/doc/{doc_id}")
+def doc_details(doc_id: str):
+    if not re.fullmatch(r"[0-9a-f]{16}", doc_id) or not store.path(doc_id).exists():
+        raise HTTPException(404, "unknown document")
+    d = store.load(doc_id)
+    return {"doc_id": doc_id, "title": d["title"], "meta": d.get("meta"), "outline": d.get("outline"),
+            "sections": [{"title": s["title"], "level": s["level"], "pages": s["pages"], "bookmarked": s.get("bookmarked")} for s in d["sections"] if s["level"]]}
 
 
 @app.get("/docs")
@@ -124,6 +141,7 @@ def docs():
 class Ask(BaseModel):
     question: str
     doc_ids: list[str] | None = None
+    depth: str | None = None
 
 
 @app.post("/ask")
@@ -134,7 +152,7 @@ def ask(req: Ask):
     if not GPU.acquire(timeout=2):
         raise HTTPException(409, "Busy ingesting a document; ask again when it finishes.")
     try:
-        return run(req.question.strip()[:2000], req.doc_ids or None)
+        return run(req.question.strip()[:2000], req.doc_ids or None, req.depth)
     except (ValueError, ConnectionError) as e:  # API refused or unreachable and no local model to fall back on
         raise HTTPException(503, str(e))
     finally:
@@ -155,8 +173,12 @@ if __name__ == "__main__":  # self-check: foreign host / origin refused, local a
     before = config.PROVIDER
     assert c.post("/mode", json={"provider": "lcoal"}).status_code == 400
     assert c.post("/mode", headers={"origin": "https://evil.com"}, json={"provider": "cloud"}).status_code == 403
-    m = c.post("/mode", json={"provider": "cloud", "google_api_key": "sk-test-secret"}).json()
-    assert m["provider"] == "cloud" and m["keys"]["google"] and "sk-test" not in json.dumps(m) and config.DATA.name == "data-cloud"
-    config.set_mode(before, google_api_key="")  # back to the real mode; the test key stays only in this process
-    assert c.get("/mode").json()["provider"] == before
+    m = c.post("/mode", json={"provider": "cloud", "depth": "thorough", "google_api_key": "sk-test-secret"}).json()
+    assert m["provider"] == "cloud" and m["depth"] == "thorough" and m["keys"]["google"] and "sk-test" not in json.dumps(m) and config.DATA.name == "data-cloud"
+    assert c.post("/mode", json={"provider": "cloud", "depth": "fast"}).status_code == 400  # not a cloud depth
+    config.set_mode(before, "fast" if before == "local" else "standard", google_api_key="")  # back to the real mode; the test key stays only in this process
+    assert c.get("/mode").json()["provider"] == before and c.get("/doc/0000000000000000").status_code == 404
+    if ids := store.list_ids():
+        d = c.get(f"/doc/{ids[0]}").json()
+        assert d["doc_id"] == ids[0] and "sections" in d
     print("ok")

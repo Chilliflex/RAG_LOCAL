@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from rag import audit, chunk, config, enrich, handwriting, index, models, parse, stitch, store, summarize
+from rag import audit, chunk, config, enrich, handwriting, index, meta, models, parse, stitch, store, summarize
 
 
 def doc_id_of(data: bytes) -> str:
@@ -43,6 +43,7 @@ def ingest(pdf: Path, force: bool = False, rebuild: bool = False) -> dict:
     if not src.exists():
         shutil.copyfile(pdf, src)
     timings = {}
+    started = time.strftime("%Y-%m-%d %H:%M:%S")  # usage-log entries from here on are this document's API cost
     models.free()  # the server may still hold the LLM and reranker from a question
 
     def stage(name, fn, *a, **kw):
@@ -78,6 +79,15 @@ def ingest(pdf: Path, force: bool = False, rebuild: bool = False) -> dict:
     stage("index", index.add, chunks)
     report = audit.run(doc, tri, toc)
     report["chunks"] = len(chunks)
+    cost = None
+    if config.PROVIDER == "cloud":
+        from rag import cloud
+        log = config.DATA / "api_usage.jsonl"
+        entries = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+        cost = cloud.cost([e for e in entries if e["time"] >= started])["usd"]
+    doc["meta"] = meta.build(doc, src, tri, timings, cost)
+    doc["meta"]["quality"]["audit_complete"] = report["complete"]
+    report["outline"] = doc["outline"]
     (doc_dir / "timings.json").write_text(json.dumps(timings, indent=1))
     store.save(doc)  # last: document.json existing means "ingested"
     _set_status(doc_id, stage="done", complete=report["complete"])

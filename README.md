@@ -33,11 +33,17 @@ API mode needs two keys: Mistral (https://console.mistral.ai/api-keys) and Googl
 ```powershell
 .venv\Scripts\python -m rag serve                    # web UI at http://127.0.0.1:8000: choose a mode, upload, ask
 .venv\Scripts\python -m rag ingest my.pdf            # parse + index (resumable; re-run continues where it stopped)
-.venv\Scripts\python -m rag ask "What was the nitrate level at station C?"
+.venv\Scripts\python -m rag ask "What was the nitrate level at station C?" [--depth balanced]
 .venv\Scripts\python -m rag docs                     # list ingested documents (of the active mode)
 .venv\Scripts\python -m rag eval                     # recall@5, accuracy by category, handwriting CER on samples/golden.json
 .venv\Scripts\python scripts\compare_modes.py        # both modes on the same PDFs -> data/eval_compare.json, with API cost
 ```
+
+**Depth** decides how much of the document one answer may read. Local: `fast` (about 2,500 tokens of passages), `balanced` (6,000), `maximum` (the whole window); cloud: `standard` (12,000), `thorough` (30,000), `maximum` (100,000, about $0.03 a question). Deeper is slower locally and costlier in API mode; pick it in the web page or with `--depth`.
+
+**Local window** is sized from free memory each time the model loads, keeping 0.75 GB free (`VRAM_RESERVE_GB`). When the reranker and an 8k window don't both fit on the GPU, the reranker runs on the CPU (about 9 s per question instead of 1-2 s) so the model keeps the GPU: on a 4 GB GTX 1650 that also drives the display (3.2 GB free) this gives an 8k window, a steady peak of 2.5 GB and 0.8 GB free. `rag doctor` and the depth hint in the web page show the window and the reranker's device. Override with `LLM_CTX`, `VRAM_RESERVE_GB` or `RERANK_DEVICE` in `.env`.
+
+Each document's **Details** (in the web page, or `GET /doc/<id>`) show its metadata: file, page types, text and figure counts, the section tree with its source (PDF bookmarks, printed contents page, or detected headings), links and quality. Count questions such as "how many sections and subsections?" or "how many diagrams?" are answered from it without a model.
 
 The CLI uses the mode from `PROVIDER` in `.env`, else the one last chosen in the web page. Run either the server or the CLI commands, not both at once: the on-disk vector store is locked by whichever process opened it first.
 
@@ -50,7 +56,7 @@ Each document lives in `data/<doc_id>/` (or `data-cloud/`): `document.json` (str
 Logs: `<data>/<doc_id>/timings.json` (seconds and peak VRAM per ingest stage), `<data>/queries.jsonl` (one line per question:
 route, provider, seconds, top score), `<data>/eval_*.json` (per-question eval detail), `data-cloud/api_usage.jsonl` (one line per API call: pages or tokens and seconds, never keys or text).
 
-Self-checks (no models or keys needed): `python -m rag.chunk`, `rag.stitch`, `rag.enrich`, `rag.handwriting`, `rag.evaluate`, `rag.cloud`, `rag.parse_mistral`, `rag.doctor`, `rag.models`, `rag.ingest`, `rag.api`.
+Self-checks (no models or keys needed): `python -m rag.chunk`, `rag.stitch`, `rag.enrich`, `rag.handwriting`, `rag.evaluate`, `rag.cloud`, `rag.parse_mistral`, `rag.doctor`, `rag.models`, `rag.ingest`, `rag.api`, `rag.query`, `rag.outline`, `rag.meta`.
 
 ## Models
 
@@ -73,6 +79,10 @@ API mode has no word positions or OCR confidences, so margin notes are not detec
 | `MISTRAL_API_KEY`, `GOOGLE_API_KEY` | | API mode keys (or enter them in the web page) |
 | `MISTRAL_OCR_MODEL`, `GEMINI_MODEL` | `mistral-ocr-latest`, `gemini-2.5-flash` | API models; a Gemini model without a thinking budget setting may reject requests |
 | `DEVICE` | `cuda` | `cuda`, `mps` or `cpu` |
+| `DEPTH` | first of the mode | default depth (see Use); the web page saves its own choice |
+| `LLM_CTX` | `0` | local model window; `0` = from free memory, keeping `VRAM_RESERVE_GB` (0.75) free |
+| `RERANK_DEVICE` | `auto` | `auto` moves the reranker to the CPU when it and an 8k window don't fit on the GPU; or `cuda` / `cpu` |
+| `SCORE_RATIO` | `0` | off; a value like `0.1` drops chunks scoring below that share of the best one (tested: it cost answers) |
 | `OCR_CONFIDENCE_MIN` | see `rag/config.py` | OCR lines below this go to TrOCR (local mode) |
 | `HANDWRITING_CONFIDENCE_MIN` | see `rag/config.py` | TrOCR's reading is kept only above this |
 | `RELEVANCE_MIN` | see `rag/config.py` | below this reranker score: "Not found in the documents." |
